@@ -1,0 +1,29 @@
+{
+  "name": "@mapconductor/vectortile",
+  "version": "0.1.0",
+  "description": "MapLibre-style vector tiles rendered to raster tiles in the browser, via a Rust/wasm core",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./wasm": "./pkg/mvt_render_wasm_bg.wasm"
+  },
+  "files": ["dist", "pkg"],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/mvt-render-wasm --target web --out-dir ../../bindings/js/pkg --release",
+    "build": "npm run build:wasm && tsup src/index.ts --format cjs,esm --dts",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist pkg"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}

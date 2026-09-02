@@ -1,0 +1,17 @@
+[package]
+name = "mvt-render-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "wasm-bindgen bindings for mvt-render"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mvt-render = { path = "../mvt-render" }
+wasm-bindgen = "0.2"
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"

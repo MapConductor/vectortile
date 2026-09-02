@@ -1,0 +1,22 @@
+{
+  "name": "@mapconductor/vectortile-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5175",
+    "build": "vite build",
+    "preview": "vite preview --port 5175",
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "@mapconductor/js-sdk-core": "file:../../react-sdk/js-sdk-core",
+    "@mapconductor/vectortile": "file:../bindings/js",
+    "maplibre-gl": "^5.23.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.0.0"
+  }
+}

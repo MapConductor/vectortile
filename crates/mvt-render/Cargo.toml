@@ -1,0 +1,11 @@
+[package]
+name = "mvt-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Platform-independent MapLibre-style vector tile rasterizer"
+
+[dependencies]
+tiny-skia.workspace = true
+serde.workspace = true
+serde_json.workspace = true
