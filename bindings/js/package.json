@@ -4,22 +4,25 @@
   "description": "MapLibre-style vector tiles rendered to raster tiles in the browser, via a Rust/wasm core",
   "type": "module",
   "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": "./dist/index.js"
     },
     "./wasm": "./pkg/mvt_render_wasm_bg.wasm"
   },
-  "files": ["dist", "pkg"],
+  "files": [
+    "dist",
+    "pkg"
+  ],
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/mvt-render-wasm --target web --out-dir ../../bindings/js/pkg --release",
-    "build": "npm run build:wasm && tsup src/index.ts --format cjs,esm --dts",
+    "build": "npm run build:wasm && npm run build:js",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist pkg"
+    "clean": "rm -rf dist pkg",
+    "build:js": "tsup src/index.ts --format esm --dts --external ../pkg/mvt_render_wasm.js"
   },
   "license": "Apache-2.0",
   "devDependencies": {

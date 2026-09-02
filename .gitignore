@@ -1,5 +1,6 @@
 target/
-pkg/
 node_modules/
-*.png
-!tests/fixtures/*.png
+dist/
+bindings/js/pkg/
+harness/test-results/
+harness/playwright-report/

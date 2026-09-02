@@ -7,6 +7,30 @@ MapKit, HERE, TomTom, ArcGIS, Cesium, OpenLayers, Leaflet — display a MapLibre
 style through an ordinary raster layer, using the raster-layer plumbing the
 MapConductor SDKs already have.
 
+## Status
+
+Web is working end to end: `style.json` -> Rust/wasm renderer -> `LocalTileServer`
+route -> raster layer, verified in Playwright against the live MapLibre demo
+style.
+
+| | |
+| --- | --- |
+| Rust core tests | 43 passing |
+| Playwright end-to-end | 3 passing |
+| wasm binary | 489 KB (release, `wasm-opt`) |
+| Warm 512px tile render | median ~31 ms (min 5, max 84), Chromium on M-series |
+
+"Warm" means the source `.pbf` is already cached, so the number is decode plus
+rasterise alone — the figure that decides whether the same core is fast enough
+on an Android or iOS device. The spread tracks feature count: a mostly-ocean
+tile is ~5 ms, a dense continental one ~84 ms.
+
+Rendering currently runs on the main thread. `LocalTileServer.attachRenderer()`
+takes a Web Worker for exactly this reason, and moving the provider behind it is
+the obvious next step before this drives a real map.
+
+Not yet started: the JNI and C-ABI bindings, and therefore anything on device.
+
 ## Why a Rust core
 
 One renderer, three platforms, identical output:

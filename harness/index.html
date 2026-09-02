@@ -12,9 +12,15 @@
                 border-radius: 6px; max-width: 46ch; white-space: pre-wrap;
                 box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
             }
-            #probe {
+            /* Kept out of the document flow rather than layered over the map:
+               stacking a 2D canvas on top of the WebGL canvas makes headless
+               Chromium composite it at the wrong offset, which shows up as a
+               phantom rectangle in screenshots. */
+            #probe { display: none; }
+            #probe-view {
                 position: absolute; bottom: 8px; right: 8px; z-index: 1;
-                border: 1px solid #999; background: #fff;
+                width: 192px; height: 192px; border: 1px solid #999;
+                background: #fff; object-fit: contain;
             }
         </style>
     </head>
@@ -22,8 +28,11 @@
         <div id="map"></div>
         <pre id="status">starting…</pre>
         <!-- One tile rendered straight through the provider, for a
-             deterministic pixel assertion that does not depend on the map. -->
+             deterministic pixel assertion that does not depend on the map.
+             The canvas stays hidden (getImageData works either way); the
+             <img> is what a human looks at. -->
         <canvas id="probe" width="256" height="256"></canvas>
+        <img id="probe-view" alt="tile 0/0/0 rendered by the provider" />
         <script type="module" src="/src/main.ts"></script>
     </body>
 </html>
