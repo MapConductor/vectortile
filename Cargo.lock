@@ -223,6 +223,7 @@ name = "mvt-render"
 version = "0.1.0"
 dependencies = [
  "earcutr",
+ "png",
  "serde",
  "serde_json",
  "tiny-skia",
