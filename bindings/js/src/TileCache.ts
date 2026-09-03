@@ -10,8 +10,15 @@
 export class TileCache {
     private readonly entries = new Map<string, Uint8Array | null>();
     private readonly inFlight = new Map<string, Promise<Uint8Array | null>>();
+    private bytes = 0;
 
-    constructor(private readonly maxEntries: number = 256) {}
+    /**
+     * Budgeted in bytes, not entries. Counting entries is the easy mistake: a
+     * basemap tile is 150-300 KB, so a few hundred of them is tens of
+     * megabytes — enough to matter in a worker, and enough to abort the
+     * process on the native platforms sharing this design.
+     */
+    constructor(private readonly maxBytes: number = 16 * 1024 * 1024) {}
 
     /**
      * Returns the bytes for `url`, fetching via `fetcher` on a miss. A `null`
@@ -46,9 +53,11 @@ export class TileCache {
 
     private set(url: string, bytes: Uint8Array | null): void {
         this.entries.set(url, bytes);
-        while (this.entries.size > this.maxEntries) {
+        this.bytes += bytes?.byteLength ?? 0;
+        while (this.bytes > this.maxBytes && this.entries.size > 1) {
             const oldest = this.entries.keys().next();
             if (oldest.done) break;
+            this.bytes -= this.entries.get(oldest.value)?.byteLength ?? 0;
             this.entries.delete(oldest.value);
         }
     }
@@ -56,6 +65,7 @@ export class TileCache {
     clear(): void {
         this.entries.clear();
         this.inFlight.clear();
+        this.bytes = 0;
     }
 
     get size(): number {

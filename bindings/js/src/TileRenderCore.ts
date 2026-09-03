@@ -11,7 +11,8 @@ export interface TileRenderCoreOptions {
     /** A `style.json` URL, its raw text, or the parsed object. */
     style: string | object;
     tileSize?: number;
-    cacheSize?: number;
+    /** Source tile cache budget in bytes. Defaults to 16 MB. */
+    cacheBytes?: number;
     wasmUrl?: string | URL;
     /**
      * Headers sent with every source tile request — auth tokens, API keys.
@@ -80,7 +81,7 @@ export class TileRenderCore {
         readonly tileSize: number,
         options: TileRenderCoreOptions,
     ) {
-        this.cache = new TileCache(options.cacheSize ?? 256);
+        this.cache = new TileCache(options.cacheBytes ?? 16 * 1024 * 1024);
         this.fetchTile = options.fetchTile ?? makeFetcher(options.headers);
     }
 

@@ -6,7 +6,7 @@ export interface WorkerInitRequest {
     /** Style JSON as text; the main thread never sends a URL it has resolved. */
     readonly styleText: string;
     readonly tileSize: number;
-    readonly cacheSize: number;
+    readonly cacheBytes: number;
     readonly headers?: Record<string, string>;
     readonly wasmUrl?: string;
 }
