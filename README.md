@@ -79,9 +79,30 @@ one worker and bypasses main-thread providers entirely
 (`LocalTileServer.ts:152`), so using it would break any page that also has a
 heatmap or marker-tile layer.
 
-Not yet done: wiring the Android and iOS bindings into `android-sdk-core` /
-`ios-sdk-core` as `TileProviderInterface` / `TileProvider` implementations, and
-an `aarch64-apple-ios` slice for real iPhones.
+### SDK modules
+
+The renderer is placed in all three SDKs as an **independent module**, never a
+core change — the same shape `android-heatmap`, `ios-heatmap` and
+`react-heatmap` already use. Each implements its core's tile provider interface
+and serves through the existing `LocalTileServer`, so a backend that cannot
+render a vector style just sees a raster layer.
+
+| | Module | Verified |
+| --- | --- | --- |
+| Android | `android-sdk/android-vectortile` | 5 tests, on device |
+| iOS | `ios-sdk/ios-vectortile` | 5 tests, on simulator |
+| Web | `react-sdk/react-vectortile` | browser resolution check |
+
+This repo owns the renderer; each module owns only its integration layer.
+`scripts/sync-sdk.sh` copies the renderer and its native artifacts out, which
+keeps the direction of the dependency obvious.
+
+Consumers of the Android module need a network security config permitting
+cleartext to `127.0.0.1` — true of every tile-server-backed layer in that SDK,
+and the reason `example-app` already carries one.
+
+Not yet done: an `aarch64-apple-ios` slice for real iPhones (the simulator
+slice is all that exists today), and symbol layers.
 
 ## Why a Rust core
 
