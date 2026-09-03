@@ -92,12 +92,9 @@ export class TileRenderCore {
 
         const renderer = new wasm.VectorTileRenderer(styleText);
         const core = new TileRenderCore(renderer, options.tileSize ?? 512, options);
-
-        const skipped = JSON.parse(renderer.unsupportedLayerTypes()) as string[];
-        if (skipped.length > 0) {
-            options.onWarning?.(`these layer types are not drawn: ${skipped.join(', ')}`);
-        }
-
+        // Undrawn layer types are reported by the caller via
+        // `unsupportedLayerTypes()`, not warned about here — otherwise the
+        // worker path would surface the same message twice.
         await core.resolveTileJson(options.onWarning);
         return core;
     }
