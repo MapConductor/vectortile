@@ -4,3 +4,15 @@ dist/
 bindings/js/pkg/
 harness/test-results/
 harness/playwright-report/
+harness/ui-recolored.png
+
+# Native build products, produced by scripts/build-android.sh and build-ios.sh
+bindings/android/build/
+bindings/android/vectortile/build/
+bindings/android/.gradle/
+bindings/android/local.properties
+bindings/android/vectortile/src/main/jniLibs/
+bindings/ios/lib/
+bindings/ios/MvtRender.xcframework/
+bindings/ios/.build/
+bindings/ios/.swiftpm/

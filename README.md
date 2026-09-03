@@ -9,42 +9,70 @@ MapConductor SDKs already have.
 
 ## Status
 
-Web is working end to end: `style.json` -> Rust/wasm renderer -> `LocalTileServer`
-route -> raster layer, verified in Playwright against the live MapLibre demo
-style.
+Working on all three platforms. A MapLibre style renders to raster tiles in the
+browser, on an Android device, and on the iOS simulator — from one Rust core.
+
+**The output is byte-identical everywhere.** Same style, same source tile, same
+SHA-256 of the resulting PNG:
+
+| | SHA-256 of tile 0/0/0 (512px) |
+| --- | --- |
+| macOS (`aarch64-apple-darwin`) | `0ec6e550…6d141e39` |
+| Android device (`aarch64-linux-android`) | `0ec6e550…6d141e39` |
+| iOS simulator (`aarch64-apple-ios-sim`) | `0ec6e550…6d141e39` |
+
+That is the whole argument for a shared Rust core rather than three native
+renderers or three MapLibre snapshotters, and it is now measured rather than
+hoped for.
+
+### Performance
+
+Warm render of the same tile — the heaviest in the demo style, 722 features
+across 5 layers — with source tiles already in hand, so this is decode plus
+rasterise:
+
+| | median | range |
+| --- | --- | --- |
+| Web (Chromium, wasm, through the SW + worker round trip) | 98 ms | 87–363 |
+| Android (Lenovo TB520FU, arm64, Android 16) | 103 ms | 103–106 |
+| iOS simulator (iPhone 17 Pro, Release) | 87 ms | 77–103 |
+
+A typical tile is far cheaper: across a mixed z2 viewport the web median is
+~31 ms, with mostly-ocean tiles at ~5 ms. The iOS figure comes from a simulator
+on desktop silicon and is **not** representative of a real device — that needs
+the `aarch64-apple-ios` slice and a phone.
 
 | | |
 | --- | --- |
 | Rust core tests | 45 passing |
 | Playwright end-to-end | 10 passing |
-| wasm binary | 489 KB (release, `wasm-opt`) |
-| Warm 512px tile render | median ~31 ms (min 5, max 84), Chromium on M-series |
+| Android instrumented (on device) | 8 passing |
+| iOS XCTest (on simulator) | 8 passing |
+| wasm binary | 489 KB · Android `.so` 1.0 MB · iOS `.a` 6.3 MB |
 | Main-thread stall, 12-tile burst | 4.9 ms in a worker vs 189.9 ms inline |
 
-"Warm" means the source `.pbf` is already cached, so the number is decode plus
-rasterise alone — the figure that decides whether the same core is fast enough
-on an Android or iOS device. The spread tracks feature count: a mostly-ocean
-tile is ~5 ms, a dense continental one ~84 ms.
+On the web, rendering runs in a Web Worker by default. Inline, a 12-tile burst
+blocked the main thread for the entire 190 ms it took; in a worker the longest
+stall was 4.9 ms. Wall-clock time is unchanged because one worker renders
+serially — a worker pool would cut that, and is the obvious next performance
+step.
 
-Rendering runs in a Web Worker by default. Inline, a 12-tile burst blocked the
-main thread for the entire 190 ms it took; in a worker the longest stall was
-4.9 ms. Wall-clock time is unchanged because one worker renders serially — a
-worker pool would cut that, and is the obvious next performance step.
-
-Styles can be swapped live with `provider.setStyle()`. Recolouring never
-invalidates fetched vector tiles — the geometry is unchanged, only the paint
-applied to it — so it costs one re-rasterise and zero network traffic, which the
-harness test asserts by checking no `.pbf` request is made. The map still has to
-be told to drop its *raster* tiles, which is what the `cacheKey` argument to
+Styles can be swapped live with `setStyle`. Recolouring never invalidates
+fetched vector tiles — the geometry is unchanged, only the paint applied to it —
+so it costs one re-rasterise and zero network traffic, which the harness test
+asserts by checking no `.pbf` request is made. The map still has to be told to
+drop its *raster* tiles, which is what the `cacheKey` argument to
 `urlTemplate()` is for.
 
-The worker belongs to the provider rather than going through
+The web worker belongs to the provider rather than going through
 `LocalTileServer.attachRenderer()`. That hook routes *every* tile route through
 one worker and bypasses main-thread providers entirely
 (`LocalTileServer.ts:152`), so using it would break any page that also has a
 heatmap or marker-tile layer.
 
-Not yet started: the JNI and C-ABI bindings, and therefore anything on device.
+Not yet done: wiring the Android and iOS bindings into `android-sdk-core` /
+`ios-sdk-core` as `TileProviderInterface` / `TileProvider` implementations, and
+an `aarch64-apple-ios` slice for real iPhones.
 
 ## Why a Rust core
 
@@ -123,8 +151,13 @@ crates/mvt-render/        platform-independent core
   src/tile.rs             fetch planning + overzoom
   src/mercator.rs         web mercator
 crates/mvt-render-wasm/   wasm-bindgen surface
+crates/mvt-render-jni/    JNI surface for Android
+crates/mvt-render-ffi/    C ABI surface for iOS
 bindings/js/              @mapconductor/vectortile — TileProvider for js-sdk-core
+bindings/android/         Gradle module + instrumented tests
+bindings/ios/             SwiftPM package + XCTest
 harness/                  Vite + Playwright end-to-end harness
+scripts/                  build-android.sh, build-ios.sh
 ```
 
 ## Building
@@ -156,6 +189,24 @@ Then the browser harness:
 ```sh
 cd harness && npm install && npm run dev     # http://localhost:5175
 cd harness && npm test                        # Playwright
+```
+
+Android, against a connected device:
+
+```sh
+./scripts/build-android.sh                   # locates the NDK via ANDROID_HOME
+cd bindings/android && ./gradlew :vectortile:connectedDebugAndroidTest
+```
+
+iOS, on a simulator:
+
+```sh
+./scripts/build-ios.sh
+cd bindings/ios
+xcodebuild -create-xcframework -library lib/libmvt_render_ffi.a \
+    -headers include -output MvtRender.xcframework
+xcodebuild -scheme MapConductorVectorTile -configuration Release \
+    -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 ```
 
 ## Reused from earlier prototypes

@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/mvt-render",
     "crates/mvt-render-wasm",
+    "crates/mvt-render-jni",
+    "crates/mvt-render-ffi",
 ]
 
 [workspace.package]
@@ -19,4 +21,7 @@ serde_json = "1"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
+# Unwinding is kept on purpose. `panic = "abort"` would be smaller, but this
+# code ships inside someone else's Android or iOS app, where a panic must
+# surface as an exception or an error code — not take the host process down.
+# The FFI crates catch unwinds at their boundaries.

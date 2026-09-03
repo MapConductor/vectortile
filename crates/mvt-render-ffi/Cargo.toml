@@ -1,0 +1,13 @@
+[package]
+name = "mvt-render-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI bindings for mvt-render"
+
+[lib]
+name = "mvt_render_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+mvt-render = { path = "../mvt-render" }

@@ -1,0 +1,13 @@
+[package]
+name = "mvt-render-jni"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JNI bindings for mvt-render"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+mvt-render = { path = "../mvt-render" }
+jni = "0.21"
