@@ -1,0 +1,34 @@
+name: VTBench
+options:
+  bundleIdPrefix: com.mapconductor
+  deploymentTarget:
+    iOS: "15.1"
+packages:
+  MapConductorVectorTile:
+    path: ../bindings/ios
+targets:
+  VTBench:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      # As individual resources, not a folder reference: a top-level directory
+      # literally named "Resources" makes codesign misdetect the iOS bundle as
+      # the old macOS layout and fail with "code object is not signed at all".
+      - path: Resources
+        buildPhase: resources
+    dependencies:
+      - package: MapConductorVectorTile
+        product: MapConductorVectorTile
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mapconductor.vtbench
+        DEVELOPMENT_TEAM: 4DUVX7999A
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # The previews debug-dylib bundle layout breaks codesign in this
+        # generated project; a plain single binary signs cleanly.
+        ENABLE_PREVIEWS: NO
+        ENABLE_DEBUG_DYLIB: NO

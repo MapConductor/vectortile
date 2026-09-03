@@ -21,6 +21,14 @@ SHA-256 of the resulting PNG:
 | Android device (`aarch64-linux-android`) | `0ec6e550…6d141e39` |
 | iOS simulator (`aarch64-apple-ios-sim`) | `0ec6e550…6d141e39` |
 
+And on the heavier z14 Tokyo tile (VersaTiles Shortbread, 82 layers drawn), a
+physical iPad joins the chain — the first real Apple hardware in it:
+
+| | SHA-256 of the z14 Tokyo tile |
+| --- | --- |
+| macOS | `2a95e84c…aed2fbd` |
+| iPad Pro 11" (`aarch64-apple-ios`) | `2a95e84c…aed2fbd` |
+
 That is the whole argument for a shared Rust core rather than three native
 renderers or three MapLibre snapshotters, and it is now measured rather than
 hoped for.
@@ -36,6 +44,7 @@ Warm render of tile 0/0/0 — the heaviest in the demo style, 722 features acros
 | Android (Lenovo TB520FU tablet, Android 16) | 103 ms | 103–106 |
 | Android (Pixel 5a, Android 14) | 312 ms | — |
 | iOS simulator (iPhone 17 Pro, Release) | 87–195 ms | 77–5900 |
+| iPad Pro 11" (A12X), z14 Tokyo tile, compiled filters | 68.9 ms | 68–76 |
 
 The Android figures are solid — a 3 ms spread across ten runs on the tablet.
 The 3x gap between the two devices is the honest range for mid-range hardware,
@@ -101,8 +110,10 @@ Consumers of the Android module need a network security config permitting
 cleartext to `127.0.0.1` — true of every tile-server-backed layer in that SDK,
 and the reason `example-app` already carries one.
 
-Not yet done: an `aarch64-apple-ios` slice for real iPhones (the simulator
-slice is all that exists today), and symbol layers.
+The `aarch64-apple-ios` device slice ships in the XCFramework alongside the
+simulator slice; `benchapp-ios/` is the on-device benchmark that verified it
+(xcodegen project — tool-hosted XCTest cannot run on physical devices, so the
+device check is an app). Still not done: symbol layers.
 
 ## Why a Rust core
 

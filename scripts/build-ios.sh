@@ -5,17 +5,20 @@
 # aarch64-apple-ios, combined into an XCFramework.
 set -euo pipefail
 
-TARGET="${IOS_TARGET:-aarch64-apple-ios-sim}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
 cd "$root"
-cargo build -p mvt-render-ffi --target "$TARGET" --release
 
-lib="$root/target/$TARGET/release/libmvt_render_ffi.a"
+# Both slices: the simulator for development, the device slice for real
+# hardware. An XCFramework carries them side by side and Xcode picks.
+for target in aarch64-apple-ios-sim aarch64-apple-ios; do
+    cargo build -p mvt-render-ffi --target "$target" --release
+done
+
 dest="$root/bindings/ios/lib"
-mkdir -p "$dest"
-cp "$lib" "$dest/"
-echo "-> $dest/libmvt_render_ffi.a ($(du -h "$lib" | cut -f1))"
+mkdir -p "$dest/sim" "$dest/device"
+cp "$root/target/aarch64-apple-ios-sim/release/libmvt_render_ffi.a" "$dest/sim/"
+cp "$root/target/aarch64-apple-ios/release/libmvt_render_ffi.a" "$dest/device/"
+echo "-> $dest/{sim,device}/libmvt_render_ffi.a"
 
 # Rebuild the XCFramework too. Copying only the .a once left a stale framework
 # in place: the Swift package links the framework, so without this step an
@@ -23,7 +26,9 @@ echo "-> $dest/libmvt_render_ffi.a ($(du -h "$lib" | cut -f1))"
 fw="$root/bindings/ios/MvtRender.xcframework"
 rm -rf "$fw"
 xcodebuild -create-xcframework \
-    -library "$dest/libmvt_render_ffi.a" \
+    -library "$dest/sim/libmvt_render_ffi.a" \
+    -headers "$root/bindings/ios/include" \
+    -library "$dest/device/libmvt_render_ffi.a" \
     -headers "$root/bindings/ios/include" \
     -output "$fw" > /dev/null
 echo "-> $fw"
