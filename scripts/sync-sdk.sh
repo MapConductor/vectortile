@@ -40,6 +40,10 @@ sync_web() {
     rm -rf "$dest/vendor/pkg" "$dest/vendor/dist"
     cp -R "$root/bindings/js/pkg" "$dest/vendor/pkg"
     cp -R "$root/bindings/js/dist" "$dest/vendor/dist"
+    # wasm-pack writes a `.gitignore` containing `*` into its output directory.
+    # Copied verbatim it makes the vendored wasm untrackable, which is how the
+    # package ends up unbuildable from a clean checkout.
+    rm -f "$dest/vendor/pkg/.gitignore"
     echo "web     -> $dest"
 }
 
