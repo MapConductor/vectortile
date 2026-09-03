@@ -13,6 +13,8 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use jni::objects::{JByteArray, JClass, JIntArray, JString};
 use jni::sys::{jbyteArray, jint, jlong, jstring};
+#[cfg(feature = "tessellate")]
+use jni::sys::jfloatArray;
 use jni::JNIEnv;
 use mvt_render::Renderer;
 
@@ -317,4 +319,160 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeUns
             }
         }
     })
+}
+
+/// Triangulates a tile for a GPU, returning one packed `float[]`.
+///
+/// Layout, chosen so a single JNI call carries everything with no object
+/// marshalling:
+///
+/// ```text
+/// [0]                       extent
+/// [1]                       background r,g,b,a present (1) or not (0)
+/// [2..6]                    background colour
+/// [6]                       batch count B
+/// [7 .. 7+B*6]              per batch: r, g, b, a, firstVertex, vertexCount
+/// [7+B*6 ..]                interleaved x, y vertex positions
+/// ```
+///
+/// Indices are exact in f32 up to 2^24, far beyond any tile's vertex count.
+#[cfg(feature = "tessellate")]
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTessellate(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    tile_size: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+) -> jfloatArray {
+    use mvt_render::tessellate::{tessellate, DecodedTile};
+
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+
+        let Ok(data_bytes) = env.convert_byte_array(&data) else {
+            throw(env, ILLEGAL_ARGUMENT, "bad tile data");
+            return std::ptr::null_mut();
+        };
+        let Ok(count) = env.get_array_length(&lengths) else {
+            throw(env, ILLEGAL_ARGUMENT, "bad length table");
+            return std::ptr::null_mut();
+        };
+        let mut table = vec![0i32; count as usize];
+        if env.get_int_array_region(&lengths, 0, &mut table).is_err() {
+            throw(env, ILLEGAL_ARGUMENT, "bad length table");
+            return std::ptr::null_mut();
+        }
+
+        // Decode exactly as the plan ordering says, same as nativeRender.
+        let plan = renderer.plan(z as u8, x as u32, y as u32);
+        let mut decoded_tiles = Vec::new();
+        let mut offset = 0usize;
+        for (request, length) in plan.requests.iter().zip(table.iter()) {
+            if *length <= 0 {
+                continue;
+            }
+            let end = offset + *length as usize;
+            if end > data_bytes.len() {
+                throw(env, ILLEGAL_ARGUMENT, "length table overruns the data buffer");
+                return std::ptr::null_mut();
+            }
+            if let Ok(tile) = mvt_render::mvt::decode(&data_bytes[offset..end]) {
+                decoded_tiles.push((request.source_id.clone(), tile, request.scale,
+                                    request.offset_x, request.offset_y));
+            }
+            offset = end;
+        }
+
+        let views: Vec<DecodedTile<'_>> = decoded_tiles
+            .iter()
+            .map(|(source_id, tile, scale, ox, oy)| DecodedTile {
+                source_id,
+                tile,
+                scale: *scale,
+                offset_x: *ox,
+                offset_y: *oy,
+            })
+            .collect();
+
+        let result = tessellate(renderer.style(), z as f64, tile_size as u32, &views);
+
+        let mut packed: Vec<f32> = Vec::with_capacity(7 + result.batches.len() * 6 + result.vertices.len());
+        packed.push(result.extent as f32);
+        match result.background {
+            Some(color) => packed.extend_from_slice(&[1.0, color.r, color.g, color.b, color.a]),
+            None => packed.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0]),
+        }
+        packed.push(result.batches.len() as f32);
+        for batch in &result.batches {
+            packed.extend_from_slice(&[
+                batch.color.r, batch.color.g, batch.color.b, batch.color.a,
+                batch.first_vertex as f32, batch.vertex_count as f32,
+            ]);
+        }
+        packed.extend_from_slice(&result.vertices);
+
+        match env.new_float_array(packed.len() as i32) {
+            Ok(array) => {
+                if env.set_float_array_region(&array, 0, &packed).is_err() {
+                    throw(env, RUNTIME_EXCEPTION, "could not fill the result array");
+                    return std::ptr::null_mut();
+                }
+                array.into_raw()
+            }
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+// The OpenGL ES experiment declares its natives on a different Kotlin class, so
+// the JNI symbol names differ. These delegate rather than duplicate, and only
+// exist in the tessellate build.
+#[cfg(feature = "tessellate")]
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeNew(
+    env: JNIEnv,
+    class: JClass,
+    style_json: JString,
+) -> jlong {
+    Java_com_mapconductor_vectortile_NativeRenderer_nativeNew(env, class, style_json)
+}
+
+#[cfg(feature = "tessellate")]
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeFree(
+    env: JNIEnv,
+    class: JClass,
+    handle: jlong,
+) {
+    Java_com_mapconductor_vectortile_NativeRenderer_nativeFree(env, class, handle)
+}
+
+#[cfg(feature = "tessellate")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeRender(
+    env: JNIEnv,
+    class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    tile_size: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+) -> jbyteArray {
+    Java_com_mapconductor_vectortile_NativeRenderer_nativeRender(
+        env, class, handle, z, x, y, tile_size, data, lengths,
+    )
 }

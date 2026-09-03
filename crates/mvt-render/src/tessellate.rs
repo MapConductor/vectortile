@@ -13,7 +13,7 @@
 use crate::color::Color;
 use crate::expr::Ctx;
 use crate::model::{self, GeomType};
-use crate::style::{Layer, LayerKind, Style};
+use crate::style::{LayerKind, Style};
 
 /// The reference tile size the style spec's pixel units are defined against.
 const REFERENCE_TILE_SIZE: f32 = 512.0;
@@ -29,6 +29,20 @@ pub struct Batch {
     pub layer_id: String,
 }
 
+/// What triangulation had to give up on.
+///
+/// Silent failures here show up as holes in the map, which is exactly the kind
+/// of defect a benchmark cannot see — so they are counted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TessellationStats {
+    /// Polygons `earcut` refused to triangulate.
+    pub earcut_failures: usize,
+    /// Vertices in those polygons, to show whether the loss is significant.
+    pub earcut_failed_vertices: usize,
+    /// Rings with fewer than three points, or zero area.
+    pub degenerate_rings: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Tessellation {
     /// Interleaved x, y pairs in tile-local units (0..extent).
@@ -38,6 +52,7 @@ pub struct Tessellation {
     pub extent: u32,
     /// Background colour, if the style has a background layer.
     pub background: Option<Color>,
+    pub stats: TessellationStats,
 }
 
 impl Tessellation {
@@ -126,7 +141,7 @@ pub fn tessellate(
                         continue;
                     }
                     batch_color.get_or_insert(color);
-                    fill_feature(feature, tile, unify, &mut out.vertices);
+                    fill_feature(feature, tile, unify, &mut out.vertices, &mut out.stats);
                 }
                 LayerKind::Line => {
                     if feature.geom_type == GeomType::Point {
@@ -213,6 +228,7 @@ fn fill_feature(
     tile: &DecodedTile<'_>,
     unify: f32,
     out: &mut Vec<f32>,
+    stats: &mut TessellationStats,
 ) {
     let extent = 4096.0_f32.max(1.0);
     // MVT packs several polygons into one feature. The first ring is always
@@ -222,7 +238,9 @@ fn fill_feature(
     let mut polygon: Vec<Vec<[f32; 2]>> = Vec::new();
     let mut exterior_sign = 0.0_f32;
 
-    let flush = |polygon: &mut Vec<Vec<[f32; 2]>>, out: &mut Vec<f32>| {
+    let flush = |polygon: &mut Vec<Vec<[f32; 2]>>,
+                 out: &mut Vec<f32>,
+                 stats: &mut TessellationStats| {
         if polygon.is_empty() {
             return;
         }
@@ -237,10 +255,16 @@ fn fill_feature(
                 flat.push(p[1] as f64);
             }
         }
-        if let Ok(indices) = earcutr::earcut(&flat, &holes, 2) {
-            for i in indices {
-                out.push(flat[i * 2] as f32);
-                out.push(flat[i * 2 + 1] as f32);
+        match earcutr::earcut(&flat, &holes, 2) {
+            Ok(indices) => {
+                for i in indices {
+                    out.push(flat[i * 2] as f32);
+                    out.push(flat[i * 2 + 1] as f32);
+                }
+            }
+            Err(_) => {
+                stats.earcut_failures += 1;
+                stats.earcut_failed_vertices += flat.len() / 2;
             }
         }
         polygon.clear();
@@ -248,6 +272,7 @@ fn fill_feature(
 
     for part in &feature.parts {
         if part.len() < 3 {
+            stats.degenerate_rings += 1;
             continue;
         }
         let ring: Vec<[f32; 2]> = part
@@ -256,19 +281,20 @@ fn fill_feature(
             .collect();
         let area = signed_area(&ring);
         if area == 0.0 {
+            stats.degenerate_rings += 1;
             continue;
         }
         if polygon.is_empty() {
             exterior_sign = area.signum();
             polygon.push(ring);
         } else if area.signum() == exterior_sign {
-            flush(&mut polygon, out);
+            flush(&mut polygon, out, stats);
             polygon.push(ring);
         } else {
             polygon.push(ring);
         }
     }
-    flush(&mut polygon, out);
+    flush(&mut polygon, out, stats);
 }
 
 fn line_feature(

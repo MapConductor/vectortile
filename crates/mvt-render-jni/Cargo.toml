@@ -11,3 +11,8 @@ crate-type = ["cdylib"]
 [dependencies]
 mvt-render = { path = "../mvt-render" }
 jni = "0.21"
+
+[features]
+# Triangulation for the OpenGL ES experiment. Off for the SDK build, which
+# rasterises on the CPU and never needs triangles.
+tessellate = ["mvt-render/tessellate"]

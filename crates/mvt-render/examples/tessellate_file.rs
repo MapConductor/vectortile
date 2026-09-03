@@ -107,6 +107,39 @@ fn main() {
         result.batches.len(),
         (result.vertices.len() * 4) as f64 / 1024.0
     );
+    // The largest batches are where a wrong colour would be most visible.
+    let mut ranked: Vec<_> = result.batches.iter().collect();
+    ranked.sort_by_key(|b| std::cmp::Reverse(b.vertex_count));
+    eprintln!("near-white batches (the ones that would show as gaps):");
+    for batch in &result.batches {
+        if batch.color.r > 0.95 && batch.color.g > 0.95 && batch.color.b > 0.95 && batch.color.a > 0.5 {
+            eprintln!(
+                "  {:24} {:>7} tris  rgba({:.0},{:.0},{:.0},{:.2})",
+                batch.layer_id,
+                batch.vertex_count / 3,
+                batch.color.r * 255.0, batch.color.g * 255.0,
+                batch.color.b * 255.0, batch.color.a,
+            );
+        }
+    }
+    eprintln!("largest batches:");
+    for batch in ranked.iter().take(8) {
+        eprintln!(
+            "  {:24} {:>7} tris  rgba({:.0},{:.0},{:.0},{:.2})",
+            batch.layer_id,
+            batch.vertex_count / 3,
+            batch.color.r * 255.0,
+            batch.color.g * 255.0,
+            batch.color.b * 255.0,
+            batch.color.a,
+        );
+    }
+    eprintln!(
+        "skipped: {} earcut failures ({} vertices), {} degenerate rings",
+        result.stats.earcut_failures,
+        result.stats.earcut_failed_vertices,
+        result.stats.degenerate_rings
+    );
     eprintln!(
         "filter-only median {:.1} ms — {} evaluations, {} matched ({:.1}%)",
         filter_times[filter_times.len() / 2],
