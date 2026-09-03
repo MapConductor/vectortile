@@ -317,6 +317,149 @@ pub unsafe extern "C" fn mvt_renderer_render(
     }
 }
 
+/// Tessellates `z/x/y` into the packed float buffer described by
+/// [`mvt_render::Renderer::tessellate_packed`].
+///
+/// On success `*out_ptr` owns `*out_len` **floats** (not bytes) and must be
+/// released with [`mvt_floats_free`].
+///
+/// # Safety
+/// Same contract as [`mvt_renderer_render`]: `data`/`lengths` must be valid for
+/// their lengths, and the out params must be writable.
+#[no_mangle]
+#[cfg(feature = "tessellate")]
+pub unsafe extern "C" fn mvt_renderer_tessellate(
+    handle: *mut MvtRenderer,
+    z: u8,
+    x: u32,
+    y: u32,
+    tile_size: u32,
+    data: *const u8,
+    data_len: usize,
+    lengths: *const u32,
+    lengths_len: usize,
+    out_ptr: *mut *mut f32,
+    out_len: *mut usize,
+) -> c_int {
+    if handle.is_null() {
+        return MVT_ERR_NULL_HANDLE;
+    }
+    if out_ptr.is_null() || out_len.is_null() {
+        return MVT_ERR_BAD_ARGUMENT;
+    }
+    *out_ptr = ptr::null_mut();
+    *out_len = 0;
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let data_bytes: &[u8] = if data.is_null() || data_len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(data, data_len)
+        };
+        let length_table: &[u32] = if lengths.is_null() || lengths_len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(lengths, lengths_len)
+        };
+
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(length_table.len());
+        let mut offset = 0usize;
+        for length in length_table {
+            let length = *length as usize;
+            if length == 0 {
+                slices.push(None);
+                continue;
+            }
+            let end = match offset.checked_add(length) {
+                Some(end) if end <= data_bytes.len() => end,
+                _ => return Err(MVT_ERR_BAD_ARGUMENT),
+            };
+            slices.push(Some(&data_bytes[offset..end]));
+            offset = end;
+        }
+
+        (*handle)
+            .inner
+            .tessellate_packed(z, x, y, tile_size, &slices)
+            .map_err(|_| MVT_ERR_RENDER_FAILED)
+    }));
+
+    match result {
+        Ok(Ok(packed)) => {
+            let mut boxed = packed.into_boxed_slice();
+            *out_len = boxed.len();
+            *out_ptr = boxed.as_mut_ptr();
+            std::mem::forget(boxed);
+            MVT_OK
+        }
+        Ok(Err(code)) => code,
+        Err(_) => MVT_ERR_PANIC,
+    }
+}
+
+/// Encodes straight-alpha RGBA pixels as PNG.
+///
+/// Exists because the platform encoders are slow enough to dominate a GPU tile:
+/// on device this is ~7 ms where `UIImage`/`Bitmap.compress` take ~48 ms.
+///
+/// # Safety
+/// `rgba` must be valid for `width * height * 4` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn mvt_encode_png(
+    rgba: *const u8,
+    width: u32,
+    height: u32,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) -> c_int {
+    if out_ptr.is_null() || out_len.is_null() {
+        return MVT_ERR_BAD_ARGUMENT;
+    }
+    *out_ptr = ptr::null_mut();
+    *out_len = 0;
+
+    let expected = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    let Some(expected) = expected else {
+        return MVT_ERR_BAD_ARGUMENT;
+    };
+    if rgba.is_null() || expected == 0 {
+        return MVT_ERR_BAD_ARGUMENT;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let pixels = std::slice::from_raw_parts(rgba, expected);
+        mvt_render::encode::encode_png_rgba(width, height, pixels)
+            .map_err(|_| MVT_ERR_RENDER_FAILED)
+    }));
+
+    match result {
+        Ok(Ok(png)) => {
+            let mut boxed = png.into_boxed_slice();
+            *out_len = boxed.len();
+            *out_ptr = boxed.as_mut_ptr();
+            std::mem::forget(boxed);
+            MVT_OK
+        }
+        Ok(Err(code)) => code,
+        Err(_) => MVT_ERR_PANIC,
+    }
+}
+
+/// Releases a float buffer returned by [`mvt_renderer_tessellate`].
+///
+/// # Safety
+/// `ptr`/`len` must be exactly what a tessellate call produced, freed once.
+#[no_mangle]
+#[cfg(feature = "tessellate")]
+pub unsafe extern "C" fn mvt_floats_free(ptr: *mut f32, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)));
+}
+
 /// Releases a buffer returned by [`mvt_renderer_render`].
 ///
 /// # Safety

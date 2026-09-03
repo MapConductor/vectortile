@@ -83,6 +83,61 @@ struct ContentView: View {
             log("png bytes \(png.count)")
             log("sha256 \(sha)")
 
+            // The GPU path, on the same tile. Metal rather than OpenGL ES,
+            // which iOS deprecated in 12; this is the code the SDK module
+            // ships, not a copy of it.
+            if let gpu = MetalTileRasterizer.createOrNull(tileSize: 512) {
+                let tessellated = try renderer.tessellate(
+                    z: 14, x: 14552, y: 6451, tileSize: 512, tiles: [tileData]
+                )
+                _ = gpu.renderPng(tessellated)  // warm the pipeline and textures
+
+                var gpuSamples: [Double] = []
+                var gpuPng = Data()
+                for _ in 0..<10 {
+                    let started = CFAbsoluteTimeGetCurrent()
+                    let packed = try renderer.tessellate(
+                        z: 14, x: 14552, y: 6451, tileSize: 512, tiles: [tileData]
+                    )
+                    guard let drawn = gpu.renderPng(packed) else { break }
+                    gpuSamples.append((CFAbsoluteTimeGetCurrent() - started) * 1000)
+                    gpuPng = drawn
+                }
+                gpuSamples.sort()
+
+                if gpuSamples.count == 10 {
+                    let timings = tessellated.timings
+                    log(String(
+                        format: "gpu median %.1fms min %.1fms max %.1fms (n=10)",
+                        gpuSamples[5], gpuSamples[0], gpuSamples[9]
+                    ))
+                    log(String(
+                        format: "gpu phases decode %.1fms tessellate %.1fms (filters %.1fms)",
+                        timings.decode, timings.tessellate, timings.filterCompile
+                    ))
+                    log("gpu batches \(tessellated.batchCount) vertices "
+                        + "\(tessellated.vertexFloatCount / TessellatedTile.vertexStride)")
+                    log("gpu png bytes \(gpuPng.count)")
+
+                    // Block averages, not raw pixels: MSAA and analytic
+                    // coverage disagree on edges by construction, and the
+                    // question worth asking is whether any region differs.
+                    if let a = rgba(gpuPng), let b = rgba(png) {
+                        let (percent, worst) = blockDifference(a, b, size: 512)
+                        log(String(format: "gpu vs cpu blocks %.2f%% worst %d", percent, worst))
+                    }
+                    try gpuPng.write(
+                        to: FileManager.default
+                            .urls(for: .documentDirectory, in: .userDomainMask)[0]
+                            .appendingPathComponent("tokyo-gpu.png")
+                    )
+                } else {
+                    log("gpu FAILED after \(gpuSamples.count) tiles")
+                }
+            } else {
+                log("gpu unavailable on this device")
+            }
+
             // Restyle: geometry unchanged, so this is one re-rasterise.
             let restyleStarted = CFAbsoluteTimeGetCurrent()
             try renderer.setStyle(
@@ -116,4 +171,54 @@ struct ContentView: View {
             log("FAILED: \(error)")
         }
     }
+}
+
+/// Decodes PNG bytes to straight-alpha RGBA over opaque white, so
+/// premultiplication cannot skew a comparison.
+private func rgba(_ png: Data) -> [UInt8]? {
+    guard let image = UIImage(data: png)?.cgImage else { return nil }
+    let size = image.width
+    var buffer = [UInt8](repeating: 0, count: size * size * 4)
+    guard let context = CGContext(
+        data: &buffer,
+        width: size, height: size,
+        bitsPerComponent: 8, bytesPerRow: size * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ) else { return nil }
+    context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+    context.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
+    return buffer
+}
+
+/// Share of 8x8 blocks whose average colour differs by more than 24/255, and
+/// the worst single channel delta.
+private func blockDifference(_ a: [UInt8], _ b: [UInt8], size: Int) -> (Double, Int) {
+    let block = 8
+    let blocks = size / block
+    var differing = 0
+    var worst = 0
+    for blockY in 0..<blocks {
+        for blockX in 0..<blocks {
+            var worstChannel = 0
+            for channel in 0..<3 {
+                var sumA = 0
+                var sumB = 0
+                for y in 0..<block {
+                    let row = (blockY * block + y) * size * 4
+                    for x in 0..<block {
+                        let index = row + (blockX * block + x) * 4 + channel
+                        sumA += Int(a[index])
+                        sumB += Int(b[index])
+                    }
+                }
+                let pixels = block * block
+                worstChannel = max(worstChannel, abs(sumA / pixels - sumB / pixels))
+            }
+            if worstChannel > 24 { differing += 1 }
+            worst = max(worst, worstChannel)
+        }
+    }
+    return (Double(differing) * 100 / Double(blocks * blocks), worst)
 }

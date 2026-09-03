@@ -175,6 +175,95 @@ impl Renderer {
             .map_err(|e| RenderError::Encode(e.to_string()))
     }
 
+    /// Tessellates `z/x/y` into the flat buffer the GPU bindings hand to their
+    /// host language.
+    ///
+    /// The packing is deliberately one array of `f32` rather than a struct: it
+    /// crosses JNI as a single `float[]` and the C ABI as a single allocation,
+    /// with no per-batch marshalling on either side. Layout:
+    ///
+    /// ```text
+    /// [0]                     extent in tile units
+    /// [1]                     1.0 if the style has a background colour
+    /// [2..6]                  background rgba
+    /// [6]                     batch count B
+    /// [7..13]                 timings: decode, tessellate, filter compile, fill, line, spare
+    /// [13 .. 13+B*2]          per batch: first vertex, vertex count
+    /// [13+B*2 ..]             vertices: x, y, r, g, b, a
+    /// ```
+    ///
+    /// `tile_data` is positional against the plan, exactly as in
+    /// [`Renderer::render`].
+    #[cfg(feature = "tessellate")]
+    pub fn tessellate_packed(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        tile_data: &[Option<&[u8]>],
+    ) -> Result<Vec<f32>, RenderError> {
+        if tile_size == 0 || tile_size > 8192 {
+            return Err(RenderError::BadTileSize(tile_size));
+        }
+
+        let plan = self.plan(z, x, y);
+        let decode_started = std::time::Instant::now();
+        let mut decoded = Vec::with_capacity(plan.requests.len());
+        for (request, data) in plan
+            .requests
+            .iter()
+            .zip(tile_data.iter().chain(std::iter::repeat(&None)))
+        {
+            let Some(bytes) = data else { continue };
+            if bytes.is_empty() {
+                continue;
+            }
+            let Ok(tile) = mvt::decode(bytes) else {
+                continue;
+            };
+            decoded.push((request, tile));
+        }
+        let decode_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
+
+        let views: Vec<tessellate::DecodedTile<'_>> = decoded
+            .iter()
+            .map(|(request, tile)| tessellate::DecodedTile {
+                source_id: &request.source_id,
+                tile,
+                scale: request.scale,
+                offset_x: request.offset_x,
+                offset_y: request.offset_y,
+            })
+            .collect();
+
+        let tessellate_started = std::time::Instant::now();
+        let result = tessellate::tessellate(&self.style, z as f64, tile_size, &views);
+        let tessellate_ms = tessellate_started.elapsed().as_secs_f32() * 1000.0;
+
+        let mut packed =
+            Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
+        packed.push(result.extent as f32);
+        match result.background {
+            Some(color) => packed.extend_from_slice(&[1.0, color.r, color.g, color.b, color.a]),
+            None => packed.extend_from_slice(&[0.0; 5]),
+        }
+        packed.push(result.batches.len() as f32);
+        packed.extend_from_slice(&[
+            decode_ms,
+            tessellate_ms,
+            result.stats.filter_compile_ms,
+            result.stats.fill_ms,
+            result.stats.line_ms,
+            0.0,
+        ]);
+        for batch in &result.batches {
+            packed.extend_from_slice(&[batch.first_vertex as f32, batch.vertex_count as f32]);
+        }
+        packed.extend_from_slice(&result.vertices);
+        Ok(packed)
+    }
+
     /// Same as [`Renderer::render`] but returns the pixmap, for callers that
     /// want raw RGBA or their own encoder.
     pub fn render_pixmap(

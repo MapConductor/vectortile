@@ -11,3 +11,6 @@ crate-type = ["staticlib", "cdylib"]
 
 [dependencies]
 mvt-render = { path = "../mvt-render" }
+
+[features]
+tessellate = ["mvt-render/tessellate"]

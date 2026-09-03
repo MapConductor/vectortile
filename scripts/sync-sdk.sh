@@ -26,8 +26,10 @@ sync_ios() {
     local dest="$sdks/ios-sdk/ios-vectortile"
     [[ -d "$dest" ]] || { echo "skip ios: $dest not found"; return; }
     mkdir -p "$dest/Sources/MapConductorVectorTile"
-    cp "$root/bindings/ios/Sources/MapConductorVectorTile/VectorTileRenderer.swift" \
+    for file in VectorTileRenderer.swift MetalTileRasterizer.swift; do
+        cp "$root/bindings/ios/Sources/MapConductorVectorTile/$file" \
        "$dest/Sources/MapConductorVectorTile/"
+    done
     rm -rf "$dest/MvtRender.xcframework"
     cp -R "$root/bindings/ios/MvtRender.xcframework" "$dest/"
     echo "ios     -> $dest"

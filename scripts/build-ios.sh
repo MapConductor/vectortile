@@ -11,7 +11,7 @@ cd "$root"
 # Both slices: the simulator for development, the device slice for real
 # hardware. An XCFramework carries them side by side and Xcode picks.
 for target in aarch64-apple-ios-sim aarch64-apple-ios; do
-    cargo build -p mvt-render-ffi --target "$target" --release
+    cargo build -p mvt-render-ffi --target "$target" --release --features tessellate
 done
 
 dest="$root/bindings/ios/lib"

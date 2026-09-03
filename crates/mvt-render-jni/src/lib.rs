@@ -357,20 +357,16 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
     data: JByteArray,
     lengths: JIntArray,
 ) -> jfloatArray {
-    use mvt_render::tessellate::{tessellate, DecodedTile};
-
     guarded(&mut env, std::ptr::null_mut(), |env| {
         let Some(renderer) = (unsafe { renderer(handle) }) else {
             throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
             return std::ptr::null_mut();
         };
 
-        let copy_started = std::time::Instant::now();
         let Ok(data_bytes) = env.convert_byte_array(&data) else {
             throw(env, ILLEGAL_ARGUMENT, "bad tile data");
             return std::ptr::null_mut();
         };
-        let copy_ms = copy_started.elapsed().as_secs_f32() * 1000.0;
         let Ok(count) = env.get_array_length(&lengths) else {
             throw(env, ILLEGAL_ARGUMENT, "bad length table");
             return std::ptr::null_mut();
@@ -381,13 +377,11 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
             return std::ptr::null_mut();
         }
 
-        // Decode exactly as the plan ordering says, same as nativeRender.
-        let decode_started = std::time::Instant::now();
-        let plan = renderer.plan(z as u8, x as u32, y as u32);
-        let mut decoded_tiles = Vec::new();
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(table.len());
         let mut offset = 0usize;
-        for (request, length) in plan.requests.iter().zip(table.iter()) {
+        for length in &table {
             if *length <= 0 {
+                slices.push(None);
                 continue;
             }
             let end = offset + *length as usize;
@@ -395,53 +389,25 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
                 throw(env, ILLEGAL_ARGUMENT, "length table overruns the data buffer");
                 return std::ptr::null_mut();
             }
-            if let Ok(tile) = mvt_render::mvt::decode(&data_bytes[offset..end]) {
-                decoded_tiles.push((request.source_id.clone(), tile, request.scale,
-                                    request.offset_x, request.offset_y));
-            }
+            slices.push(Some(&data_bytes[offset..end]));
             offset = end;
         }
 
-        let decode_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
-
-        let views: Vec<DecodedTile<'_>> = decoded_tiles
-            .iter()
-            .map(|(source_id, tile, scale, ox, oy)| DecodedTile {
-                source_id,
-                tile,
-                scale: *scale,
-                offset_x: *ox,
-                offset_y: *oy,
-            })
-            .collect();
-
-        let tessellate_started = std::time::Instant::now();
-        let result = tessellate(renderer.style(), z as f64, tile_size as u32, &views);
-        let tessellate_ms = tessellate_started.elapsed().as_secs_f32() * 1000.0;
-
-        let mut packed: Vec<f32> =
-            Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
-        packed.push(result.extent as f32);
-        match result.background {
-            Some(color) => packed.extend_from_slice(&[1.0, color.r, color.g, color.b, color.a]),
-            None => packed.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0]),
-        }
-        packed.push(result.batches.len() as f32);
-        packed.extend_from_slice(&[
-            copy_ms,
-            decode_ms,
-            tessellate_ms,
-            result.stats.filter_compile_ms,
-            result.stats.fill_ms,
-            result.stats.line_ms,
-        ]);
-        for batch in &result.batches {
-            packed.extend_from_slice(&[
-                batch.first_vertex as f32,
-                batch.vertex_count as f32,
-            ]);
-        }
-        packed.extend_from_slice(&result.vertices);
+        // Packing lives in the renderer, so this and the C ABI cannot drift
+        // apart on a layout both sides hard-code offsets into.
+        let packed = match renderer.tessellate_packed(
+            z as u8,
+            x as u32,
+            y as u32,
+            tile_size as u32,
+            &slices,
+        ) {
+            Ok(packed) => packed,
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                return std::ptr::null_mut();
+            }
+        };
 
         match env.new_float_array(packed.len() as i32) {
             Ok(array) => {
@@ -459,10 +425,6 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
     })
 }
 
-// The OpenGL ES experiment declares its natives on a different Kotlin class, so
-// the JNI symbol names differ. These delegate rather than duplicate, and only
-// exist in the tessellate build.
-#[cfg(feature = "glbench-compat")]
 #[no_mangle]
 pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeNew(
     env: JNIEnv,
