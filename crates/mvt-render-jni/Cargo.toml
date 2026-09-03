@@ -13,6 +13,9 @@ mvt-render = { path = "../mvt-render" }
 jni = "0.21"
 
 [features]
-# Triangulation for the OpenGL ES experiment. Off for the SDK build, which
-# rasterises on the CPU and never needs triangles.
+# Triangulation and the fast PNG encoder, for the GPU rendering mode.
 tessellate = ["mvt-render/tessellate"]
+# Extra JNI exports named for the OpenGL ES experiment's Kotlin class. The SDK
+# library must not carry symbols naming a class it does not ship, so this is
+# separate from `tessellate`, which the SDK does enable.
+glbench-compat = ["tessellate"]

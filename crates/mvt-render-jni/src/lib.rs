@@ -346,7 +346,7 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeUns
 /// Indices are exact in f32 up to 2^24, far beyond any tile's vertex count.
 #[cfg(feature = "tessellate")]
 #[no_mangle]
-pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTessellate(
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTessellate(
     mut env: JNIEnv,
     _class: JClass,
     handle: jlong,
@@ -462,7 +462,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
 // The OpenGL ES experiment declares its natives on a different Kotlin class, so
 // the JNI symbol names differ. These delegate rather than duplicate, and only
 // exist in the tessellate build.
-#[cfg(feature = "tessellate")]
+#[cfg(feature = "glbench-compat")]
 #[no_mangle]
 pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeNew(
     env: JNIEnv,
@@ -472,7 +472,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeNew
     Java_com_mapconductor_vectortile_NativeRenderer_nativeNew(env, class, style_json)
 }
 
-#[cfg(feature = "tessellate")]
+#[cfg(feature = "glbench-compat")]
 #[no_mangle]
 pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeFree(
     env: JNIEnv,
@@ -482,7 +482,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeFre
     Java_com_mapconductor_vectortile_NativeRenderer_nativeFree(env, class, handle)
 }
 
-#[cfg(feature = "tessellate")]
+#[cfg(feature = "glbench-compat")]
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeRender(
@@ -501,7 +501,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeRen
     )
 }
 
-#[cfg(feature = "tessellate")]
+#[cfg(feature = "glbench-compat")]
 /// Encodes a straight-alpha RGBA8 direct buffer as PNG.
 ///
 /// Takes a *direct* `ByteBuffer` on purpose: the GPU path's `glReadPixels`
@@ -509,7 +509,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeRen
 /// `GetDirectBufferAddress` hands over the pointer. A `byte[]` variant would
 /// add a full-frame copy for nothing.
 #[no_mangle]
-pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeEncodePng(
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeEncodePng(
     mut env: JNIEnv,
     _class: JClass,
     buffer: JByteBuffer,
@@ -547,4 +547,40 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeEnc
             }
         }
     })
+}
+
+// The OpenGL ES experiment declares these on its own Kotlin class, so the
+// symbol names differ from the SDK module's. They delegate rather than
+// duplicate.
+#[cfg(feature = "glbench-compat")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTessellate(
+    env: JNIEnv,
+    class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    tile_size: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+) -> jni::sys::jfloatArray {
+    Java_com_mapconductor_vectortile_NativeRenderer_nativeTessellate(
+        env, class, handle, z, x, y, tile_size, data, lengths,
+    )
+}
+
+#[cfg(feature = "glbench-compat")]
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeEncodePng(
+    env: JNIEnv,
+    class: JClass,
+    buffer: JByteBuffer,
+    width: jint,
+    height: jint,
+) -> jbyteArray {
+    Java_com_mapconductor_vectortile_NativeRenderer_nativeEncodePng(
+        env, class, buffer, width, height,
+    )
 }

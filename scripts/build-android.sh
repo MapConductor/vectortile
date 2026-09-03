@@ -34,7 +34,10 @@ export CC_aarch64_linux_android="$clang"
 export AR_aarch64_linux_android="$bin/llvm-ar"
 
 cd "$root"
-cargo build -p mvt-render-jni --target "$TARGET" --release
+# `tessellate` is on: the SDK module offers a GPU rendering mode, which needs
+# triangles and the fast PNG encoder. It costs a little binary size and nothing
+# at runtime for callers that stay on the CPU path.
+cargo build -p mvt-render-jni --features tessellate --target "$TARGET" --release
 
 dest="$root/bindings/android/vectortile/src/main/jniLibs/$ABI"
 mkdir -p "$dest"
