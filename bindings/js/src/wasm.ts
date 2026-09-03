@@ -17,6 +17,7 @@ export interface WasmRenderer {
         data: Uint8Array,
         lengths: Uint32Array,
     ): Uint8Array;
+    setStyle(styleJson: string): void;
     unresolvedSources(): string;
     setSourceTiles(
         sourceId: string,

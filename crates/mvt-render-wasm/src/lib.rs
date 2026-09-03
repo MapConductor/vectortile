@@ -100,6 +100,18 @@ impl VectorTileRenderer {
             .map_err(|e| JsError::new(&e.to_string()))
     }
 
+    /// Replaces the style without discarding the renderer.
+    ///
+    /// Vector tiles the host already fetched stay valid — geometry is
+    /// unchanged, only the paint applied to it — so a recolour costs one
+    /// re-rasterise and no network traffic.
+    #[wasm_bindgen(js_name = setStyle)]
+    pub fn set_style(&mut self, style_json: &str) -> Result<(), JsError> {
+        self.inner
+            .set_style(style_json)
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// Sources that carry a TileJSON `url` but no inline `tiles`, as a JSON
     /// array of `{ sourceId, url }`. The host resolves these and calls
     /// [`VectorTileRenderer::setSourceTiles`].

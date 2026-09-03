@@ -99,6 +99,18 @@ export class TileRenderCore {
         return core;
     }
 
+    /**
+     * Swaps in a new style. The source tile cache is deliberately kept: the
+     * vector geometry is unchanged, only the paint applied to it, so a
+     * recolour needs no refetch.
+     */
+    async setStyle(styleText: string, onWarning?: (message: string) => void): Promise<void> {
+        this.renderer.setStyle(styleText);
+        // The new style may name sources the old one did not, or reuse ones
+        // whose TileJSON was already resolved; resolving again is idempotent.
+        await this.resolveTileJson(onWarning);
+    }
+
     /** Layer `type` values in the style that will not be drawn. */
     unsupportedLayerTypes(): string[] {
         return JSON.parse(this.renderer.unsupportedLayerTypes()) as string[];

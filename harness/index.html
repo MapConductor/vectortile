@@ -4,35 +4,56 @@
         <meta charset="utf-8" />
         <title>MapConductor vector tile renderer harness</title>
         <style>
-            html, body { margin: 0; height: 100%; font: 13px system-ui, sans-serif; }
-            #map { position: absolute; inset: 0; }
-            #status {
-                position: absolute; top: 8px; left: 8px; z-index: 1;
-                background: rgba(255, 255, 255, 0.92); padding: 8px 10px;
-                border-radius: 6px; max-width: 46ch; white-space: pre-wrap;
-                box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+            :root { color-scheme: light; }
+            html, body { margin: 0; height: 100%; font: 13px/1.5 system-ui, sans-serif; }
+            #app { display: flex; height: 100%; }
+            #panel {
+                width: 310px; flex: none; overflow-y: auto; padding: 14px;
+                border-right: 1px solid #d8d8d8; background: #fafafa; box-sizing: border-box;
             }
-            /* Kept out of the document flow rather than layered over the map:
-               stacking a 2D canvas on top of the WebGL canvas makes headless
-               Chromium composite it at the wrong offset, which shows up as a
-               phantom rectangle in screenshots. */
-            #probe { display: none; }
-            #probe-view {
-                position: absolute; bottom: 8px; right: 8px; z-index: 1;
-                width: 192px; height: 192px; border: 1px solid #999;
-                background: #fff; object-fit: contain;
-            }
+            #map { flex: 1; position: relative; }
+            h1 { font-size: 14px; margin: 0 0 4px; }
+            h2 { font-size: 12px; margin: 18px 0 6px; text-transform: uppercase;
+                 letter-spacing: 0.04em; color: #666; }
+            #status { white-space: pre-wrap; font-family: ui-monospace, monospace;
+                      font-size: 11px; color: #444; margin: 0; }
+            .row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+            .row label { flex: 1; min-width: 0; overflow: hidden;
+                         text-overflow: ellipsis; white-space: nowrap; }
+            .row .prop { color: #888; font-size: 11px; }
+            .row input[type="color"] { width: 34px; height: 24px; padding: 0;
+                                       border: 1px solid #bbb; background: none; }
+            .badge { font-size: 10px; background: #e5e0ff; color: #4b3ea8;
+                     border-radius: 3px; padding: 1px 4px; }
+            button { font: inherit; padding: 4px 10px; }
+            .reset { padding: 2px 6px; font-size: 11px; }
+            #probe-view { width: 100%; border: 1px solid #ccc; background: #fff;
+                          margin-top: 6px; }
+            #timing { color: #444; font-size: 11px; min-height: 1.5em; }
         </style>
     </head>
     <body>
-        <div id="map"></div>
-        <pre id="status">starting…</pre>
-        <!-- One tile rendered straight through the provider, for a
-             deterministic pixel assertion that does not depend on the map.
-             The canvas stays hidden (getImageData works either way); the
-             <img> is what a human looks at. -->
-        <canvas id="probe" width="256" height="256"></canvas>
-        <img id="probe-view" alt="tile 0/0/0 rendered by the provider" />
+        <div id="app">
+            <aside id="panel">
+                <h1>Vector tile renderer</h1>
+                <pre id="status">starting…</pre>
+
+                <h2>Style colours</h2>
+                <div id="colors"></div>
+                <p id="timing"></p>
+                <button id="reset-all">Reset all colours</button>
+
+                <h2>Tile 0/0/0</h2>
+                <!-- Rendered straight through the provider. The canvas stays
+                     hidden for pixel assertions; the <img> is what a human
+                     looks at. Neither overlaps the map: layering a 2D canvas
+                     over the WebGL canvas makes headless Chromium composite it
+                     at the wrong offset. -->
+                <canvas id="probe" width="256" height="256" style="display: none"></canvas>
+                <img id="probe-view" alt="tile 0/0/0 rendered by the provider" />
+            </aside>
+            <div id="map"></div>
+        </div>
         <script type="module" src="/src/main.ts"></script>
     </body>
 </html>

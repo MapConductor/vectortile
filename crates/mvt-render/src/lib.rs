@@ -96,6 +96,17 @@ impl Renderer {
         &self.style
     }
 
+    /// Replaces the style, keeping the renderer (and therefore any caches the
+    /// host holds around it) alive.
+    ///
+    /// Restyling never invalidates fetched vector tiles: the geometry is
+    /// unchanged, only the paint applied to it. That is what makes live
+    /// recolouring cheap — no refetch, just a re-rasterise.
+    pub fn set_style(&mut self, style_json: &str) -> Result<(), RenderError> {
+        self.style = Style::parse(style_json)?;
+        Ok(())
+    }
+
     /// Supplies tile URLs for a source that only carried a TileJSON `url`.
     /// The host resolves TileJSON, because I/O stays on the host side.
     pub fn set_source_tiles(
@@ -321,6 +332,53 @@ mod tests {
         let decoded = tiny_skia::Pixmap::decode_png(&png).expect("round trip");
         assert_eq!(decoded.width(), 256);
         assert_eq!(decoded.height(), 256);
+    }
+
+    #[test]
+    fn set_style_recolors_without_new_tile_data() {
+        let mut renderer = Renderer::from_style(test_style());
+        let data = fixtures::sample_tile();
+
+        let before = renderer
+            .render_pixmap(10, 0, 0, 256, &[Some(data.as_slice())])
+            .unwrap()
+            .0;
+        assert_eq!(pixel(&before, 220, 230), (255, 255, 255, 255), "background");
+
+        let recolored = serde_json::to_string(&json!({
+            "version": 8,
+            "sources": {
+                "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"],
+                         "minzoom": 0, "maxzoom": 14 }
+            },
+            "layers": [
+                { "id": "bg", "type": "background",
+                  "paint": { "background-color": "#ff0000" } }
+            ]
+        }))
+        .unwrap();
+        renderer.set_style(&recolored).expect("restyle");
+
+        // Same bytes in, different pixels out.
+        let after = renderer
+            .render_pixmap(10, 0, 0, 256, &[Some(data.as_slice())])
+            .unwrap()
+            .0;
+        let (r, g, b, _) = pixel(&after, 220, 230);
+        assert!(r > 200 && g < 50 && b < 50, "expected red, got ({r},{g},{b})");
+    }
+
+    #[test]
+    fn set_style_rejects_a_broken_style_and_keeps_the_old_one() {
+        let mut renderer = Renderer::from_style(test_style());
+        assert!(renderer.set_style("{ not json").is_err());
+        // The previous style must still render.
+        let data = fixtures::sample_tile();
+        let pixmap = renderer
+            .render_pixmap(10, 0, 0, 256, &[Some(data.as_slice())])
+            .unwrap()
+            .0;
+        assert_eq!(pixel(&pixmap, 220, 230), (255, 255, 255, 255));
     }
 
     #[test]

@@ -64,6 +64,31 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
         return;
     }
 
+    if (message.type === 'setStyle') {
+        const pending = core ? Promise.resolve(core) : ready;
+        if (!pending) {
+            reply({
+                type: 'setStyle',
+                id: message.id,
+                error: 'worker received setStyle before init',
+            });
+            return;
+        }
+        pending
+            .then(async (renderer) => {
+                await renderer.setStyle(message.styleText);
+                reply({
+                    type: 'setStyle',
+                    id: message.id,
+                    unsupportedLayerTypes: renderer.unsupportedLayerTypes(),
+                });
+            })
+            .catch((error: unknown) => {
+                reply({ type: 'setStyle', id: message.id, error: String(error) });
+            });
+        return;
+    }
+
     if (message.type === 'dispose') {
         core?.dispose();
         core = null;

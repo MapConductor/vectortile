@@ -92,6 +92,21 @@ class WorkerClient {
         });
     }
 
+    setStyle(styleText: string): Promise<string[]> {
+        const id = this.nextId++;
+        return new Promise((resolve, reject) => {
+            const onMessage = (event: MessageEvent<WorkerResponse>) => {
+                const message = event.data;
+                if (message.type !== 'setStyle' || message.id !== id) return;
+                this.worker.removeEventListener('message', onMessage);
+                if (message.error) reject(new Error(message.error));
+                else resolve(message.unsupportedLayerTypes ?? []);
+            };
+            this.worker.addEventListener('message', onMessage);
+            this.worker.postMessage({ type: 'setStyle', id, styleText } satisfies WorkerRequest);
+        });
+    }
+
     render(z: number, x: number, y: number): Promise<Uint8Array | null> {
         const id = this.nextId++;
         return new Promise((resolve, reject) => {
@@ -126,7 +141,8 @@ export class VectorTileProvider implements TileProvider {
         /** Where rendering runs. `'inline'` means on the calling thread. */
         readonly mode: 'worker' | 'inline',
         readonly tileSize: number,
-        readonly unsupportedLayerTypes: string[],
+        /** Layer `type` values in the current style that will not be drawn. */
+        public unsupportedLayerTypes: string[],
         private readonly client: WorkerClient | null,
         private readonly core: TileRenderCore | null,
     ) {}
@@ -202,6 +218,28 @@ export class VectorTileProvider implements TileProvider {
         if (this.disposed) return null;
         if (this.client) return this.client.render(request.z, request.x, request.y);
         return this.core!.renderTile(request);
+    }
+
+    /**
+     * Replaces the style and returns the layer types the new one loses.
+     *
+     * Fetched vector tiles are kept: only the paint changes, so recolouring a
+     * style costs a re-rasterise and no network traffic. Callers still need to
+     * make the map refetch the *raster* tiles — pass a new `cacheKey` to
+     * `urlTemplate()` and point the raster source at it.
+     */
+    async setStyle(style: string | object): Promise<string[]> {
+        if (this.disposed) return this.unsupportedLayerTypes;
+        const styleText = await resolveStyleText(style);
+        this.unsupportedLayerTypes = this.client
+            ? await this.client.setStyle(styleText)
+            : await this.setStyleInline(styleText);
+        return this.unsupportedLayerTypes;
+    }
+
+    private async setStyleInline(styleText: string): Promise<string[]> {
+        await this.core!.setStyle(styleText);
+        return this.core!.unsupportedLayerTypes();
     }
 
     /**

@@ -15,8 +15,8 @@ style.
 
 | | |
 | --- | --- |
-| Rust core tests | 43 passing |
-| Playwright end-to-end | 6 passing |
+| Rust core tests | 45 passing |
+| Playwright end-to-end | 10 passing |
 | wasm binary | 489 KB (release, `wasm-opt`) |
 | Warm 512px tile render | median ~31 ms (min 5, max 84), Chromium on M-series |
 | Main-thread stall, 12-tile burst | 4.9 ms in a worker vs 189.9 ms inline |
@@ -30,6 +30,13 @@ Rendering runs in a Web Worker by default. Inline, a 12-tile burst blocked the
 main thread for the entire 190 ms it took; in a worker the longest stall was
 4.9 ms. Wall-clock time is unchanged because one worker renders serially — a
 worker pool would cut that, and is the obvious next performance step.
+
+Styles can be swapped live with `provider.setStyle()`. Recolouring never
+invalidates fetched vector tiles — the geometry is unchanged, only the paint
+applied to it — so it costs one re-rasterise and zero network traffic, which the
+harness test asserts by checking no `.pbf` request is made. The map still has to
+be told to drop its *raster* tiles, which is what the `cacheKey` argument to
+`urlTemplate()` is for.
 
 The worker belongs to the provider rather than going through
 `LocalTileServer.attachRenderer()`. That hook routes *every* tile route through

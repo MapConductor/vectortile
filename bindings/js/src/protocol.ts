@@ -34,9 +34,29 @@ export interface WorkerRenderResponse {
     readonly error?: string;
 }
 
+export interface WorkerSetStyleRequest {
+    readonly type: 'setStyle';
+    readonly id: number;
+    readonly styleText: string;
+}
+
+export interface WorkerSetStyleResponse {
+    readonly type: 'setStyle';
+    readonly id: number;
+    readonly error?: string;
+    readonly unsupportedLayerTypes?: string[];
+}
+
 export interface WorkerDisposeRequest {
     readonly type: 'dispose';
 }
 
-export type WorkerRequest = WorkerInitRequest | WorkerRenderRequest | WorkerDisposeRequest;
-export type WorkerResponse = WorkerInitResponse | WorkerRenderResponse;
+export type WorkerRequest =
+    | WorkerInitRequest
+    | WorkerRenderRequest
+    | WorkerSetStyleRequest
+    | WorkerDisposeRequest;
+export type WorkerResponse =
+    | WorkerInitResponse
+    | WorkerRenderResponse
+    | WorkerSetStyleResponse;
