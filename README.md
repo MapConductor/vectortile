@@ -164,6 +164,60 @@ Both cases are reported by `diagnostics()` rather than failing or silently
 producing empty tiles. Mapbox-only layer types (`sky`, `model`,
 `raster-particle`) and MapLibre-only ones show up there too.
 
+## Design decisions
+
+### One module per platform, formats behind Cargo features
+
+Not `*-mvt-tile` / `*-mlt-tile` split by tile format. Three reasons, measured:
+
+1. **The decoder is the small part.** `src/mvt.rs` is ~530 lines; the style
+   spec, expressions, rasteriser, tile planning and projection are ~2,000 and
+   are identical whatever the tile format is. Splitting by format leaves 80% of
+   the code with nowhere natural to live.
+2. **The module boundary would not match the binary boundary.** A Gradle module
+   ships a `.so`, and a Rust cdylib cannot be split across two of them without
+   either duplicating the shared core in both (~1.07 MB each, so ~2.1 MB) or
+   dynamically linking your own native libraries — awkward on Android and
+   unavailable for iOS static frameworks. Adding MLT to a *single* library
+   measured at **+0.3–0.7 MB**. Splitting costs more bytes, not fewer.
+3. **Format is a runtime property of the source, not a build-time property of
+   the app.** One style can reference several sources, and during a migration
+   some could be MVT and others MLT — so an app would end up depending on both
+   modules anyway.
+
+`mlt-core` also re-exports `fast_mvt`, so an MLT-only module would contain an
+MVT decoder regardless.
+
+"Don't pay for formats you don't use" is a real concern, but it belongs one
+layer down, as Cargo features that decide what goes into the binary.
+
+**When to revisit:** when a format changes something *other than the decoder*.
+Concretely — a non-Web-Mercator tiling scheme (measured: 5 of 12 public Esri
+vector tile services are in other CRSs), a different rendering model (3D,
+terrain, globe), a different style language (HERE ships its own), or an
+untiled source. Those touch the planner, the rasteriser or the style layer, and
+a new decoder never does.
+
+### Formats surveyed
+
+Every vendor checked serves MVT bytes. What actually differs is the *style*
+format and the authentication, not the tile encoding.
+
+| Source | Tile | Style | Key | Verified |
+| --- | --- | --- | --- | --- |
+| OSM (OSMF Shortbread) | MVT | open schema, many styles | none | rendered |
+| MapLibre demo | MVT | MapLibre spec | none | rendered |
+| ArcGIS | MVT | Mapbox spec v8 (`root.json`) | some | rendered |
+| Mapbox classic v8 | MVT | Mapbox spec v8 | yes | parses; needs `mapbox://` resolution |
+| Mapbox Standard v3 | MVT | `imports` — different model | yes | unsupported, reported by `diagnostics()` |
+| HERE | MVT (OMV) | proprietary | yes | data readable; style would need authoring |
+
+Vendor-specific quirks that belong on the host side, not in the renderer:
+ArcGIS orders tile URLs `{z}/{y}/{x}` (handled for free, since templates are
+expanded by placeholder name), uses style-relative URLs like `"../../"`, and
+its services are not always Web Mercator. `Content-Encoding: gzip` is common and
+every real HTTP client undoes it transparently.
+
 ## Layout
 
 ```
