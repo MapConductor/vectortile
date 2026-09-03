@@ -333,9 +333,15 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeUns
 /// [1]                       background r,g,b,a present (1) or not (0)
 /// [2..6]                    background colour
 /// [6]                       batch count B
-/// [7 .. 7+B*6]              per batch: r, g, b, a, firstVertex, vertexCount
-/// [7+B*6 ..]                interleaved x, y vertex positions
+/// [7..13]                   timings ms: copy-in, decode, tessellate,
+///                           filter-compile, fill, line
+/// [10 .. 10+B*6]            per batch: r, g, b, a, firstVertex, vertexCount
+/// [10+B*6 ..]               interleaved x, y vertex positions
 /// ```
+///
+/// The timings exist because the device-side cost had to be decomposed
+/// somewhere, and the only clock that can separate the JNI copy from the
+/// decode from the tessellation is the one running inside this function.
 ///
 /// Indices are exact in f32 up to 2^24, far beyond any tile's vertex count.
 #[cfg(feature = "tessellate")]
@@ -359,10 +365,12 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
             return std::ptr::null_mut();
         };
 
+        let copy_started = std::time::Instant::now();
         let Ok(data_bytes) = env.convert_byte_array(&data) else {
             throw(env, ILLEGAL_ARGUMENT, "bad tile data");
             return std::ptr::null_mut();
         };
+        let copy_ms = copy_started.elapsed().as_secs_f32() * 1000.0;
         let Ok(count) = env.get_array_length(&lengths) else {
             throw(env, ILLEGAL_ARGUMENT, "bad length table");
             return std::ptr::null_mut();
@@ -374,6 +382,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
         }
 
         // Decode exactly as the plan ordering says, same as nativeRender.
+        let decode_started = std::time::Instant::now();
         let plan = renderer.plan(z as u8, x as u32, y as u32);
         let mut decoded_tiles = Vec::new();
         let mut offset = 0usize;
@@ -393,6 +402,8 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
             offset = end;
         }
 
+        let decode_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
+
         let views: Vec<DecodedTile<'_>> = decoded_tiles
             .iter()
             .map(|(source_id, tile, scale, ox, oy)| DecodedTile {
@@ -404,15 +415,26 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
             })
             .collect();
 
+        let tessellate_started = std::time::Instant::now();
         let result = tessellate(renderer.style(), z as f64, tile_size as u32, &views);
+        let tessellate_ms = tessellate_started.elapsed().as_secs_f32() * 1000.0;
 
-        let mut packed: Vec<f32> = Vec::with_capacity(7 + result.batches.len() * 6 + result.vertices.len());
+        let mut packed: Vec<f32> =
+            Vec::with_capacity(13 + result.batches.len() * 6 + result.vertices.len());
         packed.push(result.extent as f32);
         match result.background {
             Some(color) => packed.extend_from_slice(&[1.0, color.r, color.g, color.b, color.a]),
             None => packed.extend_from_slice(&[0.0, 0.0, 0.0, 0.0, 0.0]),
         }
         packed.push(result.batches.len() as f32);
+        packed.extend_from_slice(&[
+            copy_ms,
+            decode_ms,
+            tessellate_ms,
+            result.stats.filter_compile_ms,
+            result.stats.fill_ms,
+            result.stats.line_ms,
+        ]);
         for batch in &result.batches {
             packed.extend_from_slice(&[
                 batch.color.r, batch.color.g, batch.color.b, batch.color.a,
