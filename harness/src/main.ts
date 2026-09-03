@@ -29,10 +29,20 @@ declare global {
         __harness: {
             ready: Promise<{ template: string; renderMs: number }>;
             template?: string;
+            mode?: 'worker' | 'inline';
             benchmark?: (
                 z?: number,
                 count?: number,
             ) => Promise<{ count: number; medianMs: number; minMs: number; maxMs: number }>;
+            stallTest?: (
+                mode: 'worker' | 'inline',
+                count?: number,
+            ) => Promise<{ mode: string; longestStallMs: number; totalMs: number; tiles: number }>;
+            fetchHookTest?: () => Promise<{
+                mode: string;
+                warnings: string[];
+                bytes: number;
+            }>;
         };
     }
 }
@@ -48,7 +58,7 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
         tileSize: TILE_SIZE,
         onWarning: (message) => log(`warning: ${message}`),
     });
-    log(`wasm renderer ready (tileSize=${TILE_SIZE})`);
+    log(`wasm renderer ready (tileSize=${TILE_SIZE}, mode=${provider.mode})`);
 
     // Render one tile directly, before any map is involved. This isolates the
     // renderer from the tile-server and map plumbing when something breaks.
@@ -118,6 +128,74 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
         };
     };
 
+    // Measures how long the main thread is blocked while a burst of tiles
+    // renders. This is the entire point of moving rendering off-thread, so it
+    // gets measured rather than assumed.
+    window.__harness.stallTest = async (mode, count = 12) => {
+        const subject = await VectorTileProvider.create({
+            style: STYLE_URL,
+            tileSize: TILE_SIZE,
+            worker: mode === 'worker',
+        });
+
+        const coords = Array.from({ length: count }, (_, i) => ({
+            z: 3,
+            x: i % 8,
+            y: Math.floor(i / 8) % 8,
+        }));
+        // Warm the source-tile cache so the measurement reflects rasterising,
+        // not waiting on the network.
+        for (const coord of coords) await subject.renderTile(coord);
+
+        // A self-rescheduling timer: the gap between ticks is how long the
+        // main thread was unavailable. It must record the gap *before* testing
+        // whether to stop, otherwise the final tick — the one carrying the
+        // stall we care about — is discarded.
+        let longestStallMs = 0;
+        let last = performance.now();
+        let ticking = true;
+        const tick = () => {
+            const now = performance.now();
+            longestStallMs = Math.max(longestStallMs, now - last);
+            last = now;
+            if (ticking) setTimeout(tick, 0);
+        };
+        setTimeout(tick, 0);
+
+        const started = performance.now();
+        // All at once, the way a map requests a viewport.
+        await Promise.all(coords.map((coord) => subject.renderTile(coord)));
+        const totalMs = performance.now() - started;
+        // Yield once so a timer callback can run and observe the stall that
+        // the burst just caused; only then stop the ticker.
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        ticking = false;
+        subject.dispose();
+
+        return { mode: subject.mode, longestStallMs, totalMs, tiles: count };
+    };
+
+    window.__harness.fetchHookTest = async () => {
+        const warnings: string[] = [];
+        // A function cannot be structured-cloned into a worker, so asking for
+        // one here has to degrade rather than throw.
+        const subject = await VectorTileProvider.create({
+            style: STYLE_URL,
+            tileSize: TILE_SIZE,
+            worker: true,
+            fetchTile: async (url) => {
+                const response = await fetch(url);
+                return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
+            },
+            onWarning: (message) => warnings.push(message),
+        });
+        const tile = await subject.renderTile({ z: 0, x: 0, y: 0 });
+        const result = { mode: subject.mode, warnings, bytes: tile?.byteLength ?? 0 };
+        subject.dispose();
+        return result;
+    };
+
+    window.__harness.mode = provider.mode;
     return { template, renderMs };
 }
 

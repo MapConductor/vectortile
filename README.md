@@ -16,18 +16,26 @@ style.
 | | |
 | --- | --- |
 | Rust core tests | 43 passing |
-| Playwright end-to-end | 3 passing |
+| Playwright end-to-end | 6 passing |
 | wasm binary | 489 KB (release, `wasm-opt`) |
 | Warm 512px tile render | median ~31 ms (min 5, max 84), Chromium on M-series |
+| Main-thread stall, 12-tile burst | 4.9 ms in a worker vs 189.9 ms inline |
 
 "Warm" means the source `.pbf` is already cached, so the number is decode plus
 rasterise alone — the figure that decides whether the same core is fast enough
 on an Android or iOS device. The spread tracks feature count: a mostly-ocean
 tile is ~5 ms, a dense continental one ~84 ms.
 
-Rendering currently runs on the main thread. `LocalTileServer.attachRenderer()`
-takes a Web Worker for exactly this reason, and moving the provider behind it is
-the obvious next step before this drives a real map.
+Rendering runs in a Web Worker by default. Inline, a 12-tile burst blocked the
+main thread for the entire 190 ms it took; in a worker the longest stall was
+4.9 ms. Wall-clock time is unchanged because one worker renders serially — a
+worker pool would cut that, and is the obvious next performance step.
+
+The worker belongs to the provider rather than going through
+`LocalTileServer.attachRenderer()`. That hook routes *every* tile route through
+one worker and bypasses main-thread providers entirely
+(`LocalTileServer.ts:152`), so using it would break any page that also has a
+heatmap or marker-tile layer.
 
 Not yet started: the JNI and C-ABI bindings, and therefore anything on device.
 
