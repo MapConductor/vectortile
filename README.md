@@ -170,6 +170,37 @@ than blanking the tile.
 Known gaps: `line-dasharray`, `*-pattern`, `line-gradient`, the source `scheme:
 "tms"` option, and cubic-bezier easing (approximated as linear).
 
+### Compiled filters
+
+Layer filters are compiled per (style layer, data layer) pair instead of
+interpreted per feature. The key observation is MVT's own storage model: every
+feature holds (key index, value index) pairs into tables owned by the layer, so
+any predicate on a property value can be evaluated **once per table entry**,
+producing a truth table over value indices — per feature, matching is an
+integer scan and a boolean lookup. Filters naming keys or values a tile does
+not contain fold to constants, skipping entire layers without touching a
+feature.
+
+Anything the compiler does not recognise falls back to the interpreter for
+that node, and an equivalence test pins the two against each other over every
+operator. That test immediately caught a real interpreter bug: legacy `!has`
+was not implemented, so every `!has` filter silently matched nothing.
+
+Measured on the z14 Tokyo tile (VersaTiles Shortbread, 324 layers), output
+byte-identical before and after:
+
+| | interpreted | compiled |
+| --- | --- | --- |
+| CPU render, desktop | 86.0 ms | **29.0 ms** |
+| Tessellation, desktop | 59.6 ms | **4.8 ms** |
+| CPU render + PNG, Pixel 5a | 513 ms | **322 ms** |
+| GPU path total, Pixel 5a | ~410 ms | **~103 ms** |
+| Web warm render, Chromium | 114.9 ms | **65.8 ms** |
+
+The GPU path benefits most because filtering was nearly all of its CPU cost:
+what remains on the CPU is ~94 ms of tessellation, with drawing, readback and
+bitmap conversion on the GPU side at under 10 ms combined.
+
 ### Mapbox styles
 
 MapLibre's style spec is a fork of Mapbox's v8 spec (MapLibre GL JS split from

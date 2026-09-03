@@ -76,6 +76,11 @@ impl Feature {
     pub fn property_count(&self) -> usize {
         self.props.len() / 2
     }
+
+    /// The feature's (name index, value index) pairs, in storage order.
+    pub fn prop_pairs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.props.chunks_exact(2).map(|pair| (pair[0], pair[1]))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +132,16 @@ impl Layer {
 
     pub fn property_names(&self) -> &[String] {
         &self.property_names
+    }
+
+    /// Index of a property name in this layer's tables, if present.
+    pub fn key_index(&self, key: &str) -> Option<u32> {
+        self.name_index.get(key).copied()
+    }
+
+    /// The layer-wide value table features index into.
+    pub fn values(&self) -> &[Value] {
+        &self.values
     }
 }
 

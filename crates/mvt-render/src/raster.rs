@@ -10,6 +10,7 @@ use tiny_skia::{
 
 use crate::color::Color;
 use crate::expr::Ctx;
+use crate::filter::CompiledFilter;
 use crate::model::{self, GeomType};
 use crate::style::{Layer, LayerKind, Style};
 
@@ -126,15 +127,23 @@ fn draw_data_layer(
 ) -> usize {
     let mut drawn = 0;
 
+    // Compiled once against this data layer's tables; per feature the check is
+    // an index-pair scan. A filter that cannot match here at all skips the
+    // whole feature loop.
+    let filter = CompiledFilter::compile(layer.filter.as_ref(), data, zoom);
+    if filter.never_matches() {
+        return 0;
+    }
+
     for feature in &data.features {
+        if !filter.matches(data, feature) {
+            continue;
+        }
         let ctx = Ctx {
             zoom,
             layer: Some(data),
             feature: Some(feature),
         };
-        if !layer.passes_filter(&ctx) {
-            continue;
-        }
 
         let painted = match layer.kind {
             LayerKind::Fill => draw_fill(pixmap, layer, feature, transform, &ctx, paint_scale),

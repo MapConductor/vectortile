@@ -16,3 +16,13 @@ default = []
 # Triangulation for the OpenGL ES experiment. Off by default: the CPU
 # rasteriser fills paths directly and never needs triangles.
 tessellate = ["dep:earcutr"]
+
+# The tessellation examples cannot build without the feature; declaring that
+# lets a plain `cargo test` skip them instead of failing.
+[[example]]
+name = "tessellate_file"
+required-features = ["tessellate"]
+
+[[example]]
+name = "tessellate_compare"
+required-features = ["tessellate"]

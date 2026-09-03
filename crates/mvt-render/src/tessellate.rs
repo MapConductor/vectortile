@@ -12,6 +12,7 @@
 
 use crate::color::Color;
 use crate::expr::Ctx;
+use crate::filter::CompiledFilter;
 use crate::model::{self, GeomType};
 use crate::style::{LayerKind, Style};
 
@@ -118,15 +119,21 @@ pub fn tessellate(
         let start_len = out.vertices.len();
         let mut batch_color: Option<Color> = None;
 
+        // Same compiled-filter fast path the CPU rasteriser uses.
+        let filter = CompiledFilter::compile(layer.filter.as_ref(), data, zoom);
+        if filter.never_matches() {
+            continue;
+        }
+
         for feature in &data.features {
+            if !filter.matches(data, feature) {
+                continue;
+            }
             let ctx = Ctx {
                 zoom,
                 layer: Some(data),
                 feature: Some(feature),
             };
-            if !layer.passes_filter(&ctx) {
-                continue;
-            }
 
             match layer.kind {
                 LayerKind::Fill => {

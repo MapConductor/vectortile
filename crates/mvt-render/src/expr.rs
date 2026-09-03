@@ -62,7 +62,7 @@ impl Val {
         }
     }
 
-    fn from_mvt(value: &TileValue) -> Val {
+    pub(crate) fn from_mvt(value: &TileValue) -> Val {
         match value {
             TileValue::String(s) => Val::Str(s.clone()),
             TileValue::Float(f) => Val::Num(*f),
@@ -72,7 +72,7 @@ impl Val {
         }
     }
 
-    fn from_json(json: &Json) -> Val {
+    pub(crate) fn from_json(json: &Json) -> Val {
         match json {
             Json::Null => Val::Null,
             Json::Bool(b) => Val::Bool(*b),
@@ -179,6 +179,15 @@ fn eval_array(items: &[Json], ctx: &Ctx) -> Val {
         "!" => Val::Bool(!args.first().map(|a| eval(a, ctx).truthy()).unwrap_or(false)),
         "in" => eval_in(args, ctx),
         "!in" => Val::Bool(!eval_in(args, ctx).truthy()),
+        // Legacy filter operator. Discovered missing by the filter compiler's
+        // equivalence test: as an unknown operator it evaluated to Null, so
+        // every `!has` filter silently matched nothing.
+        "!has" => Val::Bool(
+            args.first()
+                .and_then(Json::as_str)
+                .map(|k| ctx.property(k) == Val::Null)
+                .unwrap_or(false),
+        ),
         "to-number" => Val::Num(
             args.first()
                 .and_then(|a| eval(a, ctx).as_f64())

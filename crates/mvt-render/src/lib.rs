@@ -28,6 +28,7 @@
 
 pub mod color;
 pub mod expr;
+pub mod filter;
 pub mod mercator;
 pub mod model;
 pub mod mvt;
