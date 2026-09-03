@@ -42,8 +42,10 @@ to 195 ms with occasional multi-second outliers, tracking whatever else the host
 Mac was doing. Treat it as "the same order of magnitude as Android" and nothing
 finer; a trustworthy number needs the `aarch64-apple-ios` slice and a phone.
 
-A typical tile is far cheaper than this one: across a mixed z2 viewport the web
-median is ~31 ms, with mostly-ocean tiles at ~5 ms.
+The harness benchmarks street-level OSM tiles (z13 over central Tokyo, a
+324-layer basemap style): **median ~126 ms**, ranging 1.6 ms for a water tile to
+~330 ms for the densest. Benchmarking low zooms is misleading — the same
+benchmark at z2 reports ~5 ms because those tiles are mostly empty ocean.
 
 | | |
 | --- | --- |
@@ -52,7 +54,7 @@ median is ~31 ms, with mostly-ocean tiles at ~5 ms.
 | Android instrumented (on device) | 10 passing |
 | iOS XCTest (on simulator) | 10 passing |
 | wasm binary | 489 KB · Android `.so` 1.0 MB · iOS `.a` 6.3 MB |
-| Main-thread stall, 12-tile burst | 4.9 ms in a worker vs 189.9 ms inline |
+| Main-thread stall, 12-tile burst | 5.4 ms in a worker vs 1709 ms inline |
 
 On the web, rendering runs in a Web Worker by default. Inline, a 12-tile burst
 blocked the main thread for the entire 190 ms it took; in a worker the longest
@@ -234,7 +236,8 @@ crates/mvt-render-ffi/    C ABI surface for iOS
 bindings/js/              @mapconductor/vectortile — TileProvider for js-sdk-core
 bindings/android/         Gradle module + instrumented tests
 bindings/ios/             SwiftPM package + XCTest
-harness/                  Vite + Playwright end-to-end harness
+harness/                  Vite + Playwright end-to-end harness, against the
+                          OSMF Shortbread tile service (no API key)
 scripts/                  build-android.sh, build-ios.sh
 ```
 
@@ -268,6 +271,17 @@ Then the browser harness:
 cd harness && npm install && npm run dev     # http://localhost:5175
 cd harness && npm test                        # Playwright
 ```
+
+The harness renders the [OSMF Shortbread tiles](https://vector.openstreetmap.org/shortbread_v1/tilejson.json)
+with a [VersaTiles](https://versatiles.org/) style — a demonstration of what an
+open schema buys you, since the style and the tiles come from different hosts.
+Neither needs an API key. Add `?style=demo` for the MapLibre demo style, which
+is kept around because it has per-feature colour *expressions* and Shortbread's
+style does not.
+
+Anything beyond local development should respect the
+[OSMF Vector Tile Usage Policy](https://operations.osmfoundation.org/policies/vector/)
+and host its own tiles; Shortbread can be generated from an OSM extract.
 
 Android, against a connected device:
 

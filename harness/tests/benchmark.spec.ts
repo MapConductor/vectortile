@@ -9,7 +9,8 @@ test('records warm single-tile render cost', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => window.__harness.ready);
 
-    const result = await page.evaluate(() => window.__harness.benchmark!(2, 16));
+    // Street-level tiles: benchmarking low zooms measures mostly-empty ocean.
+    const result = await page.evaluate(() => window.__harness.benchmark!(13, 16));
     console.log(
         `warm 512px tile render — median ${result.medianMs.toFixed(1)} ms, ` +
             `min ${result.minMs.toFixed(1)} ms, max ${result.maxMs.toFixed(1)} ms ` +

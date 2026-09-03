@@ -26,6 +26,9 @@
             .badge { font-size: 10px; background: #e5e0ff; color: #4b3ea8;
                      border-radius: 3px; padding: 1px 4px; }
             button { font: inherit; padding: 4px 10px; }
+            #colour-filter { width: 100%; box-sizing: border-box; padding: 4px 6px;
+                             font: inherit; margin-bottom: 4px; }
+            #colour-count { color: #888; font-size: 11px; margin: 0 0 6px; }
             .reset { padding: 2px 6px; font-size: 11px; }
             #probe-view { width: 100%; border: 1px solid #ccc; background: #fff;
                           margin-top: 6px; }
@@ -39,6 +42,10 @@
                 <pre id="status">starting…</pre>
 
                 <h2>Style colours</h2>
+                <!-- A real basemap style has hundreds of colour properties, so
+                     the list needs narrowing to be usable at all. -->
+                <input id="colour-filter" type="search" placeholder="filter by layer or property…" />
+                <p id="colour-count"></p>
                 <div id="colors"></div>
                 <p id="timing"></p>
                 <button id="reset-all">Reset all colours</button>

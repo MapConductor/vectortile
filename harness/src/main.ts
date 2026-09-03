@@ -12,13 +12,60 @@ import { VectorTileProvider } from '@mapconductor/vectortile';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
-const STYLE_URL = 'https://demotiles.maplibre.org/style.json';
+/**
+ * Two styles, because they exercise different things.
+ *
+ * Shortbread is the default: real street-level data to z14, no API key, and an
+ * open schema, so the style and the tiles come from different hosts — which is
+ * the point of an open schema and worth demonstrating.
+ *
+ * The MapLibre demo style is kept reachable with `?style=demo` because it has
+ * per-feature colour *expressions*, which Shortbread's does not, and the flat
+ * override path needs something to override.
+ */
+const STYLES = {
+    shortbread: {
+        label: 'OSM Shortbread (VersaTiles colorful)',
+        url: 'https://tiles.versatiles.org/assets/styles/colorful/style.json',
+        // The style ships pointing at VersaTiles' own tiles; repoint it at the
+        // OSMF service. Same schema, different host.
+        rewriteSources: (style: StyleDoc) => {
+            for (const id of Object.keys(style.sources)) {
+                style.sources[id] = {
+                    type: 'vector',
+                    tiles: ['https://vector.openstreetmap.org/shortbread_v1/{z}/{x}/{y}.mvt'],
+                    minzoom: 0,
+                    maxzoom: 14,
+                } as StyleDoc['sources'][string];
+            }
+        },
+        center: [139.767, 35.681] as [number, number],
+        zoom: 12,
+        // Required when serving OSM data, and it is the tile source that has
+        // to be credited — not whatever style happens to be painted over it.
+        attribution:
+            '<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a> · ' +
+            'style <a href="https://versatiles.org/">VersaTiles</a>',
+    },
+    demo: {
+        label: 'MapLibre demo',
+        url: 'https://demotiles.maplibre.org/style.json',
+        rewriteSources: undefined,
+        center: [10, 30] as [number, number],
+        zoom: 2,
+        attribution: '<a href="https://maplibre.org/">MapLibre</a> demo tiles',
+    },
+} as const;
+
+const STYLE_KEY: keyof typeof STYLES =
+    new URLSearchParams(location.search).get('style') === 'demo' ? 'demo' : 'shortbread';
+const STYLE = STYLES[STYLE_KEY];
 const ROUTE_ID = 'vectortile-demo';
 const TILE_SIZE = 512;
 const DRAWABLE = new Set(['background', 'fill', 'line', 'circle']);
 
 type StyleDoc = {
-    sources: Record<string, { type?: string }>;
+    sources: Record<string, { type?: string; tiles?: string[]; minzoom?: number; maxzoom?: number }>;
     layers: {
         id: string;
         type: string;
@@ -104,13 +151,41 @@ function toHexInput(value: unknown): string | null {
     return null;
 }
 
+/** Tile covering `lon`/`lat` at `z`, so benchmarks can target real data. */
+function tileAt(lon: number, lat: number, z: number): { z: number; x: number; y: number } {
+    const n = 2 ** z;
+    const x = Math.floor(((lon + 180) / 360) * n);
+    const latRad = (lat * Math.PI) / 180;
+    const y = Math.floor(
+        (0.5 - Math.log(Math.tan(Math.PI / 4 + latRad / 2)) / (2 * Math.PI)) * n,
+    );
+    return { z, x, y };
+}
+
+/** A block of `count` adjacent tiles around the style's centre. */
+function tileBlock(count: number, z: number): { z: number; x: number; y: number }[] {
+    const centre = tileAt(STYLE.center[0], STYLE.center[1], z);
+    const side = Math.ceil(Math.sqrt(count));
+    const out: { z: number; x: number; y: number }[] = [];
+    for (let i = 0; i < count; i += 1) {
+        out.push({
+            z,
+            x: centre.x + (i % side),
+            y: centre.y + Math.floor(i / side),
+        });
+    }
+    return out;
+}
+
 async function boot(): Promise<{ template: string; renderMs: number }> {
     const tileServer = TileServerRegistry.get();
     tileServer.startServiceWorker('/tile-sw.js');
     await tileServer.waitForController();
     log('service worker ready');
 
-    const style = (await (await fetch(STYLE_URL)).json()) as StyleDoc;
+    const style = (await (await fetch(STYLE.url)).json()) as StyleDoc;
+    STYLE.rewriteSources?.(style);
+    log(`style: ${STYLE.label} (${style.layers.length} layers)`);
 
     const provider = await VectorTileProvider.create({
         style,
@@ -150,13 +225,13 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
                     type: 'raster',
                     tiles: [template],
                     tileSize: TILE_SIZE,
-                    attribution: 'MapLibre demo tiles',
+                    attribution: STYLE.attribution,
                 },
             },
             layers: [{ id: 'rendered', type: 'raster', source: 'rendered' }],
         },
-        center: [10, 30],
-        zoom: 2,
+        center: STYLE.center,
+        zoom: STYLE.zoom,
     });
     log('raster layer mounted');
 
@@ -197,6 +272,7 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
         const hex = toHexInput(control.original);
         const row = document.createElement('div');
         row.className = 'row';
+        row.dataset.search = `${control.layerId} ${control.property}`;
 
         const label = document.createElement('label');
         label.innerHTML =
@@ -238,6 +314,30 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
 
         colorsEl.append(row);
     }
+
+    // --- filtering ---------------------------------------------------------
+
+    const filterEl = document.getElementById('colour-filter') as HTMLInputElement;
+    const countEl = document.getElementById('colour-count') as HTMLParagraphElement;
+
+    function applyFilter(): void {
+        const needle = filterEl.value.trim().toLowerCase();
+        let shown = 0;
+        for (const row of colorsEl.children) {
+            const element = row as HTMLElement;
+            const hay = (element.dataset.search ?? '').toLowerCase();
+            const match = needle === '' || hay.includes(needle);
+            element.style.display = match ? '' : 'none';
+            if (match) shown += 1;
+        }
+        countEl.textContent =
+            shown === controls.length
+                ? `${controls.length} colour properties`
+                : `${shown} of ${controls.length} colour properties`;
+    }
+
+    filterEl.addEventListener('input', applyFilter);
+    applyFilter();
 
     (document.getElementById('reset-all') as HTMLButtonElement).addEventListener(
         'click',
@@ -283,13 +383,10 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
         await applyStyle();
     };
 
-    window.__harness.benchmark = async (z = 2, count = 16) => {
-        const side = 1 << z;
-        const coords = Array.from({ length: count }, (_, i) => ({
-            z,
-            x: i % side,
-            y: Math.floor(i / side) % side,
-        }));
+    // Defaults to street-level tiles around the style's centre. Benchmarking
+    // low zooms measures mostly-empty ocean and flatters the renderer.
+    window.__harness.benchmark = async (z = 13, count = 16) => {
+        const coords = tileBlock(count, z);
 
         // First pass fills the source-tile cache; only the second is timed, so
         // network latency stays out of the number.
@@ -315,16 +412,12 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
     // gets measured rather than assumed.
     window.__harness.stallTest = async (mode, count = 12) => {
         const subject = await VectorTileProvider.create({
-            style: STYLE_URL,
+            style,
             tileSize: TILE_SIZE,
             worker: mode === 'worker',
         });
 
-        const coords = Array.from({ length: count }, (_, i) => ({
-            z: 3,
-            x: i % 8,
-            y: Math.floor(i / 8) % 8,
-        }));
+        const coords = tileBlock(count, 13);
         for (const coord of coords) await subject.renderTile(coord);
 
         // A self-rescheduling timer: the gap between ticks is how long the main
@@ -359,7 +452,7 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
         // A function cannot be structured-cloned into a worker, so asking for
         // one here has to degrade rather than throw.
         const subject = await VectorTileProvider.create({
-            style: STYLE_URL,
+            style,
             tileSize: TILE_SIZE,
             worker: true,
             fetchTile: async (url) => {
