@@ -16,3 +16,14 @@ dest="$root/bindings/ios/lib"
 mkdir -p "$dest"
 cp "$lib" "$dest/"
 echo "-> $dest/libmvt_render_ffi.a ($(du -h "$lib" | cut -f1))"
+
+# Rebuild the XCFramework too. Copying only the .a once left a stale framework
+# in place: the Swift package links the framework, so without this step an
+# updated renderer silently never reaches iOS.
+fw="$root/bindings/ios/MvtRender.xcframework"
+rm -rf "$fw"
+xcodebuild -create-xcframework \
+    -library "$dest/libmvt_render_ffi.a" \
+    -headers "$root/bindings/ios/include" \
+    -output "$fw" > /dev/null
+echo "-> $fw"
