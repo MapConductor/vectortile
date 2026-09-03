@@ -107,6 +107,47 @@ fn main() {
         result.batches.len(),
         (result.vertices.len() * 4) as f64 / 1024.0
     );
+    // Hypothesis check for the 11.82% device diff: the tessellator batches one
+    // colour per layer, taken from the first matching feature. If any layer's
+    // paint evaluates to several colours across its features, everything after
+    // the first is painted wrongly. Count exactly that.
+    {
+        use mvt_render::style::LayerKind;
+        use std::collections::HashMap;
+        let mut multi = 0usize;
+        for layer in &style.layers {
+            if !matches!(layer.kind, LayerKind::Fill | LayerKind::Line | LayerKind::Circle)
+                || !layer.is_visible()
+                || !layer.applies_at(z as f64)
+            {
+                continue;
+            }
+            let Some(source_layer) = layer.source_layer.as_deref() else { continue };
+            let Some(data) = tile.layer(source_layer) else { continue };
+            let key = match layer.kind {
+                LayerKind::Fill => "fill-color",
+                LayerKind::Line => "line-color",
+                _ => "circle-color",
+            };
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            for feature in &data.features {
+                let ctx = Ctx { zoom: z as f64, layer: Some(data), feature: Some(feature) };
+                if !layer.passes_filter(&ctx) { continue; }
+                let c = layer.paint_color(key, &ctx, mvt_render::Color::BLACK);
+                let hex = format!("#{:02X}{:02X}{:02X}/{:.2}",
+                    (c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, c.a);
+                *counts.entry(hex).or_default() += 1;
+            }
+            if counts.len() > 1 {
+                multi += 1;
+                let mut list: Vec<_> = counts.into_iter().collect();
+                list.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+                eprintln!("  MULTI-COLOUR {:28} {:?}", layer.id, list);
+            }
+        }
+        eprintln!("layers with per-feature colours: {multi}");
+    }
+
     // The largest batches are where a wrong colour would be most visible.
     let mut ranked: Vec<_> = result.batches.iter().collect();
     ranked.sort_by_key(|b| std::cmp::Reverse(b.vertex_count));
