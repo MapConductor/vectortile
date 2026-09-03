@@ -53,6 +53,7 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
                     type: 'init',
                     id: message.id,
                     unsupportedLayerTypes: created.unsupportedLayerTypes(),
+                    diagnostics: created.diagnostics(),
                     warnings,
                 });
             },
@@ -81,6 +82,7 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
                     type: 'setStyle',
                     id: message.id,
                     unsupportedLayerTypes: renderer.unsupportedLayerTypes(),
+                    diagnostics: renderer.diagnostics(),
                 });
             })
             .catch((error: unknown) => {

@@ -135,6 +135,15 @@ impl Renderer {
         self.style.unsupported_layer_types()
     }
 
+    /// Human-readable reasons the current style may not render as intended.
+    ///
+    /// Worth surfacing to the user: the failure mode that matters is a blank
+    /// tile, and a style this renderer cannot use should say so rather than
+    /// quietly produce nothing.
+    pub fn diagnostics(&self) -> Vec<String> {
+        self.style.diagnostics()
+    }
+
     /// The source tiles needed to draw `z/x/y`, in the order the bytes must be
     /// passed back to [`Renderer::render`].
     pub fn plan(&self, z: u8, x: u32, y: u32) -> TilePlan {

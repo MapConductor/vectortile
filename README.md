@@ -27,27 +27,30 @@ hoped for.
 
 ### Performance
 
-Warm render of the same tile — the heaviest in the demo style, 722 features
-across 5 layers — with source tiles already in hand, so this is decode plus
-rasterise:
+Warm render of tile 0/0/0 — the heaviest in the demo style, 722 features across
+5 layers — with source tiles already in hand, so this is decode plus rasterise:
 
 | | median | range |
 | --- | --- | --- |
 | Web (Chromium, wasm, through the SW + worker round trip) | 98 ms | 87–363 |
 | Android (Lenovo TB520FU, arm64, Android 16) | 103 ms | 103–106 |
-| iOS simulator (iPhone 17 Pro, Release) | 87 ms | 77–103 |
+| iOS simulator (iPhone 17 Pro, Release) | 87–195 ms | 77–5900 |
 
-A typical tile is far cheaper: across a mixed z2 viewport the web median is
-~31 ms, with mostly-ocean tiles at ~5 ms. The iOS figure comes from a simulator
-on desktop silicon and is **not** representative of a real device — that needs
-the `aarch64-apple-ios` slice and a phone.
+The Android figure is solid — a 3 ms spread across ten runs on a real device.
+**The iOS figure is not.** Repeated runs on the simulator gave medians from 87 ms
+to 195 ms with occasional multi-second outliers, tracking whatever else the host
+Mac was doing. Treat it as "the same order of magnitude as Android" and nothing
+finer; a trustworthy number needs the `aarch64-apple-ios` slice and a phone.
+
+A typical tile is far cheaper than this one: across a mixed z2 viewport the web
+median is ~31 ms, with mostly-ocean tiles at ~5 ms.
 
 | | |
 | --- | --- |
-| Rust core tests | 45 passing |
+| Rust core tests | 49 passing |
 | Playwright end-to-end | 10 passing |
-| Android instrumented (on device) | 8 passing |
-| iOS XCTest (on simulator) | 8 passing |
+| Android instrumented (on device) | 10 passing |
+| iOS XCTest (on simulator) | 10 passing |
 | wasm binary | 489 KB · Android `.so` 1.0 MB · iOS `.a` 6.3 MB |
 | Main-thread stall, 12-tile burst | 4.9 ms in a worker vs 189.9 ms inline |
 
@@ -139,6 +142,27 @@ than blanking the tile.
 
 Known gaps: `line-dasharray`, `*-pattern`, `line-gradient`, the source `scheme:
 "tms"` option, and cubic-bezier easing (approximated as linear).
+
+### Mapbox styles
+
+MapLibre's style spec is a fork of Mapbox's v8 spec (MapLibre GL JS split from
+Mapbox GL JS v1.13 in 2020), so the classic subset is shared and a classic
+Mapbox v8 style parses and renders here unchanged — same layer types, same
+expressions, same filters. Two things differ:
+
+- **`mapbox://` URLs.** Sources, sprites and glyphs addressed this way need an
+  access token and must be translated to `https://api.mapbox.com/...` before
+  they can be fetched. That resolution belongs on the host side, next to the
+  token — the same place TileJSON resolution already happens.
+- **Mapbox v3 "Standard".** It introduced `imports`, `slot`, `fragment` and
+  `config`, which compose a style out of other styles. That is a genuinely
+  different model, not a superset of v8, and it is not supported. A Standard
+  style keeps the whole basemap behind an import, so it would otherwise render
+  blank.
+
+Both cases are reported by `diagnostics()` rather than failing or silently
+producing empty tiles. Mapbox-only layer types (`sky`, `model`,
+`raster-particle`) and MapLibre-only ones show up there too.
 
 ## Layout
 

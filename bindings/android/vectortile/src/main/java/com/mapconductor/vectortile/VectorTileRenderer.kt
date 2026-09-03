@@ -76,6 +76,16 @@ class VectorTileRenderer private constructor(handle: Long) : Closeable {
     fun unsupportedLayerTypes(): String =
         NativeRenderer.nativeUnsupportedLayerTypes(requireHandle())
 
+    /**
+     * Reasons the current style may not render as intended, as a JSON array of
+     * strings: unsupported layer types, sources that cannot be fetched, layers
+     * pointing at undefined sources, Mapbox `imports`.
+     *
+     * Worth surfacing — the failure mode that matters is a blank tile, and a
+     * style this renderer cannot use should say so.
+     */
+    fun diagnostics(): String = NativeRenderer.nativeDiagnostics(requireHandle())
+
     /** Releases the native renderer. Safe to call more than once. */
     override fun close() {
         // getAndSet keeps a double close from freeing the same pointer twice.

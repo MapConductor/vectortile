@@ -141,6 +141,49 @@ class VectorTileRendererTest {
     }
 
     @Test
+    fun diagnosesAMapboxStandardStyleInsteadOfRenderingBlank() {
+        // Mapbox v3 keeps the whole basemap behind an import. Nothing here can
+        // follow that, and without a diagnostic the result is a blank tile with
+        // no explanation.
+        val mapboxStandard = """
+            {"version":8,
+             "imports":[{"id":"basemap","url":"mapbox://styles/mapbox/standard"}],
+             "sources":{},
+             "layers":[{"id":"overlay","type":"fill","source":"custom",
+                        "source-layer":"zones","slot":"middle"}]}
+        """.trimIndent()
+
+        VectorTileRenderer.create(mapboxStandard).use { subject ->
+            val messages = JSONArray(subject.diagnostics())
+            val values = (0 until messages.length()).map { messages.getString(it) }
+            assertTrue("expected an imports diagnostic, got ${'$'}values",
+                values.any { it.contains("imports") })
+            assertTrue("expected an undefined-source diagnostic, got ${'$'}values",
+                values.any { it.contains("does not define") })
+        }
+    }
+
+    @Test
+    fun diagnosesASourceUrlThatCannotBeFetched() {
+        // A classic Mapbox v8 style parses fine; only its mapbox:// source URL
+        // needs translating host-side, where the access token lives.
+        val mapboxClassic = """
+            {"version":8,
+             "sources":{"composite":{"type":"vector",
+                        "url":"mapbox://mapbox.mapbox-streets-v8"}},
+             "layers":[{"id":"water","type":"fill","source":"composite",
+                        "source-layer":"water","paint":{"fill-color":"#a0c8f0"}}]}
+        """.trimIndent()
+
+        VectorTileRenderer.create(mapboxClassic).use { subject ->
+            val messages = JSONArray(subject.diagnostics())
+            val values = (0 until messages.length()).map { messages.getString(it) }
+            assertTrue("expected a mapbox: scheme diagnostic, got ${'$'}values",
+                values.any { it.contains("mapbox:") })
+        }
+    }
+
+    @Test
     fun aBrokenStyleThrowsInsteadOfCrashingTheProcess() {
         try {
             VectorTileRenderer.create("{ not json")

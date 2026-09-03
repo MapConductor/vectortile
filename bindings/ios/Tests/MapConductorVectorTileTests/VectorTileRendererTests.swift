@@ -139,6 +139,40 @@ final class VectorTileRendererTests: XCTestCase {
         XCTAssertTrue(try renderer.unsupportedLayerTypes().contains("symbol"))
     }
 
+    func testDiagnosesAMapboxStandardStyleInsteadOfRenderingBlank() throws {
+        // Mapbox v3 keeps the whole basemap behind an import. Nothing here can
+        // follow that, and without a diagnostic the result is a blank tile with
+        // no explanation.
+        let mapboxStandard = """
+        {"version":8,
+         "imports":[{"id":"basemap","url":"mapbox://styles/mapbox/standard"}],
+         "sources":{},
+         "layers":[{"id":"overlay","type":"fill","source":"custom",
+                    "source-layer":"zones","slot":"middle"}]}
+        """
+        let subject = try VectorTileRenderer(styleJSON: mapboxStandard)
+        defer { subject.close() }
+
+        let messages = try subject.diagnostics()
+        XCTAssertTrue(messages.contains { $0.contains("imports") }, "\(messages)")
+        XCTAssertTrue(messages.contains { $0.contains("does not define") }, "\(messages)")
+    }
+
+    func testDiagnosesASourceURLThatCannotBeFetched() throws {
+        // A classic Mapbox v8 style parses fine; only its mapbox:// source URL
+        // needs translating host-side, where the access token lives.
+        let mapboxClassic = """
+        {"version":8,
+         "sources":{"composite":{"type":"vector",
+                    "url":"mapbox://mapbox.mapbox-streets-v8"}},
+         "layers":[{"id":"water","type":"fill","source":"composite",
+                    "source-layer":"water","paint":{"fill-color":"#a0c8f0"}}]}
+        """
+        let subject = try VectorTileRenderer(styleJSON: mapboxClassic)
+        defer { subject.close() }
+        XCTAssertTrue(try subject.diagnostics().contains { $0.contains("mapbox:") })
+    }
+
     func testABrokenStyleThrowsInsteadOfCrashing() {
         XCTAssertThrowsError(try VectorTileRenderer(styleJSON: "{ not json")) { error in
             guard case VectorTileError.styleRejected = error else {

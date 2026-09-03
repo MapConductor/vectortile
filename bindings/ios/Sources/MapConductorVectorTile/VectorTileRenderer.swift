@@ -92,6 +92,20 @@ public final class VectorTileRenderer {
         return (try? JSONDecoder().decode([String].self, from: Data(text.utf8))) ?? []
     }
 
+    /// Reasons the current style may not render as intended: unsupported layer
+    /// types, sources that cannot be fetched, layers pointing at undefined
+    /// sources, Mapbox `imports`.
+    ///
+    /// Worth surfacing — the failure mode that matters is a blank tile, and a
+    /// style this renderer cannot use should say so.
+    public func diagnostics() throws -> [String] {
+        let live = try requireHandle()
+        guard let json = mvt_renderer_diagnostics(live) else { return [] }
+        defer { mvt_string_free(json) }
+        let text = String(cString: json)
+        return (try? JSONDecoder().decode([String].self, from: Data(text.utf8))) ?? []
+    }
+
     /// Rasterises `z/x/y` to PNG bytes.
     ///
     /// - Parameter tiles: one entry per ``plan(z:x:y:)`` request, in the same

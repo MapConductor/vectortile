@@ -117,6 +117,15 @@ export class TileRenderCore {
     }
 
     /**
+     * Reasons the current style may not render as intended — unsupported layer
+     * types, sources that cannot be fetched, layers pointing at undefined
+     * sources, Mapbox `imports`.
+     */
+    diagnostics(): string[] {
+        return JSON.parse(this.renderer.diagnostics()) as string[];
+    }
+
+    /**
      * Sources declared with a TileJSON `url` carry no tile templates until the
      * document is fetched. The wasm core never does I/O, so resolution happens
      * here and is handed back in.

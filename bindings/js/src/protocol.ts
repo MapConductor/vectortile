@@ -16,6 +16,7 @@ export interface WorkerInitResponse {
     readonly id: number;
     readonly error?: string;
     readonly unsupportedLayerTypes?: string[];
+    readonly diagnostics?: string[];
     readonly warnings?: string[];
 }
 
@@ -45,6 +46,7 @@ export interface WorkerSetStyleResponse {
     readonly id: number;
     readonly error?: string;
     readonly unsupportedLayerTypes?: string[];
+    readonly diagnostics?: string[];
 }
 
 export interface WorkerDisposeRequest {

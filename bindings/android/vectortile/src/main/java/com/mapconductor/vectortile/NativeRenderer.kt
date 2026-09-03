@@ -38,4 +38,7 @@ internal object NativeRenderer {
 
     /** JSON array of layer `type` values the renderer will not draw. */
     external fun nativeUnsupportedLayerTypes(handle: Long): String
+
+    /** JSON array of reasons the style may not render as intended. */
+    external fun nativeDiagnostics(handle: Long): String
 }

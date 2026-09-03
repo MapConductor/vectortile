@@ -163,6 +163,13 @@ pub struct Style {
     pub name: Option<String>,
     pub sources: BTreeMap<String, Source>,
     pub layers: Vec<Layer>,
+    /// Whether the style composes other styles through Mapbox's `imports`.
+    ///
+    /// Mapbox's v3 "Standard" styles put the entire basemap behind an import
+    /// and keep only overlay layers locally. Nothing here can follow that, so
+    /// it is recorded in order to be reported — a style that renders blank
+    /// should say why.
+    pub has_imports: bool,
 }
 
 impl Style {
@@ -193,10 +200,17 @@ impl Style {
 
         let layers = layer_list.iter().filter_map(parse_layer).collect();
 
+        let has_imports = obj
+            .get("imports")
+            .and_then(Json::as_array)
+            .map(|imports| !imports.is_empty())
+            .unwrap_or(false);
+
         Ok(Style {
             name,
             sources,
             layers,
+            has_imports,
         })
     }
 
@@ -248,6 +262,73 @@ impl Style {
             }
         }
         result
+    }
+
+    /// Human-readable reasons this style may not render as its author intended.
+    ///
+    /// Exists because the failure mode that matters is a *blank* tile: a style
+    /// this renderer cannot use should explain itself rather than quietly
+    /// produce nothing.
+    pub fn diagnostics(&self) -> Vec<String> {
+        let mut out = Vec::new();
+
+        if self.has_imports {
+            out.push(
+                "style composes other styles with `imports` (Mapbox Standard); \
+                 imported layers are not rendered"
+                    .to_string(),
+            );
+        }
+
+        for source in self.sources.values() {
+            if !source.is_vector() || !source.tiles.is_empty() {
+                continue;
+            }
+            match source.url.as_deref() {
+                Some(url) if !url.starts_with("http://") && !url.starts_with("https://") => {
+                    let scheme = url.split(':').next().unwrap_or(url);
+                    out.push(format!(
+                        "source \"{}\" uses a `{}:` URL, which cannot be fetched directly; \
+                         resolve it to an https TileJSON URL first",
+                        source.id, scheme
+                    ));
+                }
+                Some(_) => {}
+                None => out.push(format!(
+                    "source \"{}\" has neither `tiles` nor `url`",
+                    source.id
+                )),
+            }
+        }
+
+        for layer in &self.layers {
+            if !layer.kind.is_drawable() || layer.kind == LayerKind::Background {
+                continue;
+            }
+            let Some(source_id) = layer.source.as_deref() else {
+                continue;
+            };
+            if !self.sources.contains_key(source_id) {
+                out.push(format!(
+                    "layer \"{}\" references source \"{}\", which the style does not define",
+                    layer.id, source_id
+                ));
+            }
+        }
+
+        let unsupported = self.unsupported_layer_types();
+        if !unsupported.is_empty() {
+            out.push(format!(
+                "these layer types are not drawn: {}",
+                unsupported.join(", ")
+            ));
+        }
+
+        if !self.layers.iter().any(|l| l.kind.is_drawable() && l.is_visible()) {
+            out.push("no layer in this style can be drawn; tiles will be empty".to_string());
+        }
+
+        out
     }
 
     /// Layer `type` values that were parsed but will not be drawn.
@@ -421,6 +502,66 @@ mod tests {
         ));
         assert_eq!(style.sources["sat"].maxzoom, 18);
         assert!(!style.set_source_tiles("nope", vec![], None, None));
+    }
+
+    #[test]
+    fn diagnoses_a_mapbox_standard_style_instead_of_rendering_blank() {
+        // Mapbox v3 keeps the whole basemap behind an import; nothing here can
+        // follow that, and the failure mode without a diagnostic is a silently
+        // empty tile.
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "imports": [{ "id": "basemap", "url": "mapbox://styles/mapbox/standard" }],
+            "sources": {},
+            "layers": [
+                { "id": "overlay", "type": "fill", "source": "custom",
+                  "source-layer": "zones", "slot": "middle" }
+            ]
+        }))
+        .unwrap();
+
+        assert!(style.has_imports);
+        let messages = style.diagnostics().join("\n");
+        assert!(messages.contains("imports"), "{messages}");
+        assert!(messages.contains("does not define"), "{messages}");
+    }
+
+    #[test]
+    fn diagnoses_a_source_url_that_cannot_be_fetched() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": {
+                "composite": { "type": "vector", "url": "mapbox://mapbox.mapbox-streets-v8" }
+            },
+            "layers": [
+                { "id": "water", "type": "fill", "source": "composite", "source-layer": "water" }
+            ]
+        }))
+        .unwrap();
+
+        let messages = style.diagnostics().join("\n");
+        assert!(messages.contains("mapbox:"), "{messages}");
+        assert!(messages.contains("TileJSON"), "{messages}");
+    }
+
+    #[test]
+    fn a_healthy_style_reports_only_undrawn_layer_types() {
+        let messages = sample().diagnostics();
+        // The sample has a symbol layer and a raster source with a plain https
+        // TileJSON url; neither is a defect worth more than one line.
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("symbol"));
+    }
+
+    #[test]
+    fn flags_a_style_with_nothing_drawable() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": {},
+            "layers": [{ "id": "labels", "type": "symbol" }]
+        }))
+        .unwrap();
+        assert!(style.diagnostics().iter().any(|m| m.contains("tiles will be empty")));
     }
 
     #[test]

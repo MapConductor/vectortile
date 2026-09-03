@@ -141,6 +141,20 @@ impl VectorTileRenderer {
         Ok(self.inner.set_source_tiles(source_id, tiles, minzoom, maxzoom))
     }
 
+    /// Reasons the current style may not render as intended, as a JSON array
+    /// of strings. Covers unsupported layer types, sources that cannot be
+    /// fetched, layers pointing at undefined sources, and Mapbox `imports`.
+    pub fn diagnostics(&self) -> String {
+        serde_json::Value::Array(
+            self.inner
+                .diagnostics()
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        )
+        .to_string()
+    }
+
     /// Layer `type` values in this style that will not be drawn, as a JSON
     /// array of strings. Lets the host warn instead of silently dropping them.
     #[wasm_bindgen(js_name = unsupportedLayerTypes)]

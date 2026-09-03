@@ -25,6 +25,7 @@ export interface WasmRenderer {
         minzoom?: number,
         maxzoom?: number,
     ): boolean;
+    diagnostics(): string;
     unsupportedLayerTypes(): string;
     free(): void;
 }

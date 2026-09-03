@@ -42,6 +42,9 @@ char *mvt_renderer_plan(MvtRenderer *handle, uint8_t z, uint32_t x, uint32_t y);
 /* JSON array of layer `type` values that will not be drawn. */
 char *mvt_renderer_unsupported_layer_types(MvtRenderer *handle);
 
+/* JSON array of reasons the style may not render as intended. */
+char *mvt_renderer_diagnostics(MvtRenderer *handle);
+
 /*
  * Rasterises one tile to PNG.
  *

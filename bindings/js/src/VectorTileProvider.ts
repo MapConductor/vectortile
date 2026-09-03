@@ -72,6 +72,7 @@ class WorkerClient {
 
     init(request: Omit<Extract<WorkerRequest, { type: 'init' }>, 'id'>): Promise<{
         unsupportedLayerTypes: string[];
+        diagnostics: string[];
         warnings: string[];
     }> {
         const id = this.nextId++;
@@ -84,6 +85,7 @@ class WorkerClient {
                 else
                     resolve({
                         unsupportedLayerTypes: message.unsupportedLayerTypes ?? [],
+                        diagnostics: message.diagnostics ?? [],
                         warnings: message.warnings ?? [],
                     });
             };
@@ -92,7 +94,10 @@ class WorkerClient {
         });
     }
 
-    setStyle(styleText: string): Promise<string[]> {
+    setStyle(styleText: string): Promise<{
+        unsupportedLayerTypes: string[];
+        diagnostics: string[];
+    }> {
         const id = this.nextId++;
         return new Promise((resolve, reject) => {
             const onMessage = (event: MessageEvent<WorkerResponse>) => {
@@ -100,7 +105,11 @@ class WorkerClient {
                 if (message.type !== 'setStyle' || message.id !== id) return;
                 this.worker.removeEventListener('message', onMessage);
                 if (message.error) reject(new Error(message.error));
-                else resolve(message.unsupportedLayerTypes ?? []);
+                else
+                    resolve({
+                        unsupportedLayerTypes: message.unsupportedLayerTypes ?? [],
+                        diagnostics: message.diagnostics ?? [],
+                    });
             };
             this.worker.addEventListener('message', onMessage);
             this.worker.postMessage({ type: 'setStyle', id, styleText } satisfies WorkerRequest);
@@ -143,6 +152,12 @@ export class VectorTileProvider implements TileProvider {
         readonly tileSize: number,
         /** Layer `type` values in the current style that will not be drawn. */
         public unsupportedLayerTypes: string[],
+        /**
+         * Reasons the current style may not render as intended. Worth showing
+         * the user: a style this renderer cannot use should explain itself
+         * rather than quietly produce blank tiles.
+         */
+        public diagnostics: string[],
         private readonly client: WorkerClient | null,
         private readonly core: TileRenderCore | null,
     ) {}
@@ -160,11 +175,16 @@ export class VectorTileProvider implements TileProvider {
         }
 
         const core = await TileRenderCore.create(options);
-        const unsupported = core.unsupportedLayerTypes();
-        if (unsupported.length > 0) {
-            options.onWarning?.(`these layer types are not drawn: ${unsupported.join(', ')}`);
-        }
-        return new VectorTileProvider('inline', tileSize, unsupported, null, core);
+        const diagnostics = core.diagnostics();
+        for (const message of diagnostics) options.onWarning?.(message);
+        return new VectorTileProvider(
+            'inline',
+            tileSize,
+            core.unsupportedLayerTypes(),
+            diagnostics,
+            null,
+            core,
+        );
     }
 
     /** Why a worker cannot be used, or null if one can. */
@@ -188,7 +208,7 @@ export class VectorTileProvider implements TileProvider {
             new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
         const client = new WorkerClient(worker);
-        const { unsupportedLayerTypes, warnings } = await client.init({
+        const { unsupportedLayerTypes, diagnostics, warnings } = await client.init({
             type: 'init',
             styleText,
             tileSize,
@@ -198,16 +218,13 @@ export class VectorTileProvider implements TileProvider {
         });
 
         for (const warning of warnings) options.onWarning?.(warning);
-        if (unsupportedLayerTypes.length > 0) {
-            options.onWarning?.(
-                `these layer types are not drawn: ${unsupportedLayerTypes.join(', ')}`,
-            );
-        }
+        for (const message of diagnostics) options.onWarning?.(message);
 
         return new VectorTileProvider(
             'worker',
             tileSize,
             unsupportedLayerTypes,
+            diagnostics,
             client,
             null,
         );
@@ -229,17 +246,24 @@ export class VectorTileProvider implements TileProvider {
      * `urlTemplate()` and point the raster source at it.
      */
     async setStyle(style: string | object): Promise<string[]> {
-        if (this.disposed) return this.unsupportedLayerTypes;
+        if (this.disposed) return this.diagnostics;
         const styleText = await resolveStyleText(style);
-        this.unsupportedLayerTypes = this.client
+        const result = this.client
             ? await this.client.setStyle(styleText)
             : await this.setStyleInline(styleText);
-        return this.unsupportedLayerTypes;
+        this.unsupportedLayerTypes = result.unsupportedLayerTypes;
+        this.diagnostics = result.diagnostics;
+        return this.diagnostics;
     }
 
-    private async setStyleInline(styleText: string): Promise<string[]> {
+    private async setStyleInline(
+        styleText: string,
+    ): Promise<{ unsupportedLayerTypes: string[]; diagnostics: string[] }> {
         await this.core!.setStyle(styleText);
-        return this.core!.unsupportedLayerTypes();
+        return {
+            unsupportedLayerTypes: this.core!.unsupportedLayerTypes(),
+            diagnostics: this.core!.diagnostics(),
+        };
     }
 
     /**

@@ -183,6 +183,31 @@ pub unsafe extern "C" fn mvt_renderer_plan(
     }
 }
 
+/// Reasons the current style may not render as intended, as a JSON array of
+/// strings. Release with [`mvt_string_free`].
+///
+/// # Safety
+/// `handle` must be live.
+#[no_mangle]
+pub unsafe extern "C" fn mvt_renderer_diagnostics(handle: *mut MvtRenderer) -> *mut c_char {
+    if handle.is_null() {
+        return ptr::null_mut();
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let messages: Vec<String> = (*handle)
+            .inner
+            .diagnostics()
+            .iter()
+            .map(|message| json_string(message))
+            .collect();
+        format!("[{}]", messages.join(","))
+    }));
+    match result {
+        Ok(json) => into_c_string(json),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
 /// Layer `type` values in the current style that will not be drawn, as a JSON
 /// array of strings. Release with [`mvt_string_free`].
 ///

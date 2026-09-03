@@ -263,6 +263,34 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeRen
     })
 }
 
+/// Reasons the current style may not render as intended, as a JSON array of
+/// strings.
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeDiagnostics(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jstring {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        let messages: Vec<String> = renderer
+            .diagnostics()
+            .iter()
+            .map(|message| json_string(message))
+            .collect();
+        match env.new_string(format!("[{}]", messages.join(","))) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
 /// Layer `type` values in the current style that will not be drawn, as a JSON
 /// array of strings.
 #[no_mangle]
