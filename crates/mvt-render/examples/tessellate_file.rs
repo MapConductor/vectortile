@@ -38,7 +38,14 @@ fn main() {
     let mut last = None;
     for _ in 0..repeat {
         let decoded = vec![DecodedTile {
-            source_id: style.sources.keys().next().map(String::as_str).unwrap_or(""),
+            // The first *vector* source the style actually draws from. Taking
+        // `sources.keys().next()` picked whichever sorted first — a geojson
+        // source in the MapLibre demo style — and silently tessellated nothing.
+        source_id: style
+            .active_vector_sources(z as f64)
+            .first()
+            .map(|s| s.id.as_str())
+            .unwrap_or(""),
             tile: &tile,
             scale: 1.0,
             offset_x: 0.0,
@@ -151,29 +158,9 @@ fn main() {
     // The largest batches are where a wrong colour would be most visible.
     let mut ranked: Vec<_> = result.batches.iter().collect();
     ranked.sort_by_key(|b| std::cmp::Reverse(b.vertex_count));
-    eprintln!("near-white batches (the ones that would show as gaps):");
-    for batch in &result.batches {
-        if batch.color.r > 0.95 && batch.color.g > 0.95 && batch.color.b > 0.95 && batch.color.a > 0.5 {
-            eprintln!(
-                "  {:24} {:>7} tris  rgba({:.0},{:.0},{:.0},{:.2})",
-                batch.layer_id,
-                batch.vertex_count / 3,
-                batch.color.r * 255.0, batch.color.g * 255.0,
-                batch.color.b * 255.0, batch.color.a,
-            );
-        }
-    }
     eprintln!("largest batches:");
     for batch in ranked.iter().take(8) {
-        eprintln!(
-            "  {:24} {:>7} tris  rgba({:.0},{:.0},{:.0},{:.2})",
-            batch.layer_id,
-            batch.vertex_count / 3,
-            batch.color.r * 255.0,
-            batch.color.g * 255.0,
-            batch.color.b * 255.0,
-            batch.color.a,
-        );
+        eprintln!("  {:24} {:>7} tris", batch.layer_id, batch.vertex_count / 3);
     }
     eprintln!(
         "skipped: {} earcut failures ({} vertices), {} degenerate rings",

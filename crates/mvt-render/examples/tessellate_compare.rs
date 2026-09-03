@@ -39,7 +39,14 @@ fn main() {
     // --- candidate: tessellate, then fill the triangles with tiny-skia ------
     let tile = mvt::decode(&bytes).expect("decode");
     let decoded = vec![DecodedTile {
-        source_id: style.sources.keys().next().map(String::as_str).unwrap_or(""),
+        // The first *vector* source the style actually draws from. Taking
+        // `sources.keys().next()` picked whichever sorted first — a geojson
+        // source in the MapLibre demo style — and silently tessellated nothing.
+        source_id: style
+            .active_vector_sources(z as f64)
+            .first()
+            .map(|s| s.id.as_str())
+            .unwrap_or(""),
         tile: &tile,
         scale: 1.0,
         offset_x: 0.0,
@@ -52,22 +59,44 @@ fn main() {
         candidate.fill(bg.to_tiny_skia());
     }
     let scale = size as f32 / tess.extent as f32;
+    let stride = mvt_render::tessellate::VERTEX_STRIDE;
     for batch in &tess.batches {
-        let start = (batch.first_vertex * 2) as usize;
-        let end = start + (batch.vertex_count * 2) as usize;
+        let start = batch.first_vertex as usize * stride;
+        let end = start + batch.vertex_count as usize * stride;
         let coords = &tess.vertices[start..end];
-        let mut pb = PathBuilder::new();
-        for triangle in coords.chunks_exact(6) {
-            pb.move_to(triangle[0] * scale, triangle[1] * scale);
-            pb.line_to(triangle[2] * scale, triangle[3] * scale);
-            pb.line_to(triangle[4] * scale, triangle[5] * scale);
-            pb.close();
+
+        // Colour is per vertex, and every vertex of a triangle carries the
+        // same one, so triangles are grouped by colour before filling.
+        let mut run_start = 0usize;
+        let triangles = coords.len() / (stride * 3);
+        while run_start < triangles {
+            let colour = colour_of(coords, run_start, stride);
+            let mut run_end = run_start + 1;
+            while run_end < triangles && colour_of(coords, run_end, stride) == colour {
+                run_end += 1;
+            }
+            let mut pb = PathBuilder::new();
+            for t in run_start..run_end {
+                let base = t * stride * 3;
+                pb.move_to(coords[base] * scale, coords[base + 1] * scale);
+                pb.line_to(coords[base + stride] * scale, coords[base + stride + 1] * scale);
+                pb.line_to(
+                    coords[base + stride * 2] * scale,
+                    coords[base + stride * 2 + 1] * scale,
+                );
+                pb.close();
+            }
+            if let Some(path) = pb.finish() {
+                let mut paint = Paint::default();
+                paint.set_color(
+                    tiny_skia::Color::from_rgba(colour[0], colour[1], colour[2], colour[3])
+                        .unwrap_or(tiny_skia::Color::TRANSPARENT),
+                );
+                paint.anti_alias = true;
+                candidate.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+            }
+            run_start = run_end;
         }
-        let Some(path) = pb.finish() else { continue };
-        let mut paint = Paint::default();
-        paint.set_color(batch.color.to_tiny_skia());
-        paint.anti_alias = true;
-        candidate.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
     }
 
     // --- diff ---------------------------------------------------------------
@@ -116,35 +145,23 @@ fn main() {
         // this is the attribution the device app could not give.
         let tx = wx as f32 / scale;
         let ty = wy as f32 / scale;
-        println!("batches covering that pixel, in draw order:");
-        for batch in &tess.batches {
-            let start = (batch.first_vertex * 2) as usize;
-            let end = start + (batch.vertex_count * 2) as usize;
-            let coords = &tess.vertices[start..end];
-            let mut covering = 0usize;
-            for t in coords.chunks_exact(6) {
-                if point_in_triangle(tx, ty, t) {
-                    covering += 1;
-                }
-            }
-            if covering > 0 {
-                println!(
-                    "  {:28} {:>3} tris cover it  rgba({:.0},{:.0},{:.0},{:.2})",
-                    batch.layer_id,
-                    covering,
-                    batch.color.r * 255.0,
-                    batch.color.g * 255.0,
-                    batch.color.b * 255.0,
-                    batch.color.a
-                );
-            }
-        }
     }
 
     reference.save_png(format!("{prefix}-cpu.png")).unwrap();
     candidate.save_png(format!("{prefix}-tri.png")).unwrap();
     diff_map.save_png(format!("{prefix}-diff.png")).unwrap();
     println!("wrote {prefix}-cpu.png / -tri.png / -diff.png");
+}
+
+/// Colour of triangle `index` within a batch's vertex slice.
+fn colour_of(coords: &[f32], index: usize, stride: usize) -> [f32; 4] {
+    let base = index * stride * 3;
+    [
+        coords[base + 2],
+        coords[base + 3],
+        coords[base + 4],
+        coords[base + 5],
+    ]
 }
 
 fn point_in_triangle(px: f32, py: f32, t: &[f32]) -> bool {

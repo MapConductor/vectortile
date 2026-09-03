@@ -147,6 +147,11 @@ impl Layer {
             .unwrap_or(default)
     }
 
+    /// Whether this paint property can differ between features of a layer.
+    pub fn paint_varies_per_feature(&self, key: &str) -> bool {
+        self.paint.get(key).map(expr::depends_on_feature).unwrap_or(false)
+    }
+
     pub fn paint_string(&self, key: &str, ctx: &Ctx) -> Option<String> {
         self.paint_value(key, ctx)
             .and_then(|v| v.as_str().map(str::to_owned))

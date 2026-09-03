@@ -19,14 +19,18 @@ use crate::style::{LayerKind, Style};
 /// The reference tile size the style spec's pixel units are defined against.
 const REFERENCE_TILE_SIZE: f32 = 512.0;
 
-/// One draw call: a colour and a run of vertices in [`Tessellation::vertices`].
+/// One draw call: a run of vertices in [`Tessellation::vertices`].
+///
+/// Colour lives on the vertices, not here. A style layer may paint each
+/// feature differently — the MapLibre demo style gives every country its own
+/// fill through a `match` — and collapsing that to one colour per draw call
+/// disagreed with the CPU renderer on 37% of a tile's pixels.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Batch {
-    pub color: Color,
     /// Index of the first vertex, not the first float.
     pub first_vertex: u32,
     pub vertex_count: u32,
-    /// Style layer this came from, for debugging and for merging decisions.
+    /// Style layer this came from, for debugging and draw order.
     pub layer_id: String,
 }
 
@@ -52,9 +56,13 @@ pub struct TessellationStats {
     pub line_ms: f32,
 }
 
+/// Floats per vertex: x, y, r, g, b, a.
+pub const VERTEX_STRIDE: usize = 6;
+
 #[derive(Debug, Clone, Default)]
 pub struct Tessellation {
-    /// Interleaved x, y pairs in tile-local units (0..extent).
+    /// Interleaved x, y, r, g, b, a — see [`VERTEX_STRIDE`]. Positions are in
+    /// tile-local units (0..extent), colours straight alpha in 0..1.
     pub vertices: Vec<f32>,
     pub batches: Vec<Batch>,
     /// Extent the coordinates are expressed in, for the vertex shader.
@@ -66,7 +74,11 @@ pub struct Tessellation {
 
 impl Tessellation {
     pub fn triangle_count(&self) -> usize {
-        self.vertices.len() / 6
+        self.vertices.len() / (VERTEX_STRIDE * 3)
+    }
+
+    pub fn vertex_count(&self) -> usize {
+        self.vertices.len() / VERTEX_STRIDE
     }
 }
 
@@ -125,7 +137,6 @@ pub fn tessellate(
         let unify = out.extent as f32 / data.extent as f32;
 
         let start_len = out.vertices.len();
-        let mut batch_color: Option<Color> = None;
 
         // Same compiled-filter fast path the CPU rasteriser uses.
         let compile_started = std::time::Instant::now();
@@ -135,110 +146,112 @@ pub fn tessellate(
             continue;
         }
 
-        // Paint, evaluated once per layer on the first matching feature.
-        //
-        // Not an approximation this module newly introduces: a batch is one
-        // draw call in one colour, so the tessellator has always painted the
-        // whole layer with the first feature's paint. Evaluating the JSON per
-        // feature only to discard every result after the first was measured at
-        // ~14 ms per tile on a Pixel 5a — half the tessellation time.
-        struct LinePaint {
-            half_width: f32,
-        }
-        struct CirclePaint {
-            radius: f32,
-        }
-        let mut line_paint: Option<LinePaint> = None;
-        let mut circle_paint: Option<CirclePaint> = None;
-        let mut layer_invisible = false;
+        // Paint is evaluated once per layer unless it actually varies per
+        // feature. Walking the paint JSON for every feature costs ~14 ms a
+        // tile on a mid-range phone and almost always yields the same answer;
+        // collapsing it when it does *not* is what painted every country the
+        // same colour.
+        let (color_key, size_key) = match layer.kind {
+            LayerKind::Fill => ("fill-color", "fill-opacity"),
+            LayerKind::Line => ("line-color", "line-opacity"),
+            _ => ("circle-color", "circle-opacity"),
+        };
+        let varies = layer.paint_varies_per_feature(color_key)
+            || layer.paint_varies_per_feature(size_key)
+            || layer.paint_varies_per_feature("line-width")
+            || layer.paint_varies_per_feature("circle-radius");
+
+        let mut cached: Option<(Color, f32)> = None;
 
         for feature in &data.features {
-            if layer_invisible {
-                break;
-            }
             if !filter.matches(data, feature) {
+                continue;
+            }
+            if layer.kind == LayerKind::Fill && feature.geom_type != GeomType::Polygon {
+                continue;
+            }
+            if layer.kind == LayerKind::Line && feature.geom_type == GeomType::Point {
+                continue;
+            }
+
+            // (colour, size) where size is a half-width for lines, a radius
+            // for circles, and unused for fills.
+            let paint = if varies || cached.is_none() {
+                let ctx = Ctx {
+                    zoom,
+                    layer: Some(data),
+                    feature: Some(feature),
+                };
+                let resolved = match layer.kind {
+                    LayerKind::Fill => {
+                        let opacity = layer.paint_number("fill-opacity", &ctx, 1.0) as f32;
+                        (
+                            layer
+                                .paint_color("fill-color", &ctx, Color::BLACK)
+                                .with_opacity(opacity),
+                            0.0,
+                        )
+                    }
+                    LayerKind::Line => {
+                        let opacity = layer.paint_number("line-opacity", &ctx, 1.0) as f32;
+                        let width =
+                            layer.paint_number("line-width", &ctx, 1.0) as f32 * paint_scale;
+                        (
+                            layer
+                                .paint_color("line-color", &ctx, Color::BLACK)
+                                .with_opacity(opacity),
+                            width * 0.5 * out.extent as f32 / tile_size as f32,
+                        )
+                    }
+                    _ => {
+                        let opacity = layer.paint_number("circle-opacity", &ctx, 1.0) as f32;
+                        let radius =
+                            layer.paint_number("circle-radius", &ctx, 5.0) as f32 * paint_scale;
+                        (
+                            layer
+                                .paint_color("circle-color", &ctx, Color::BLACK)
+                                .with_opacity(opacity),
+                            radius * out.extent as f32 / tile_size as f32,
+                        )
+                    }
+                };
+                if !varies {
+                    cached = Some(resolved);
+                }
+                resolved
+            } else {
+                cached.unwrap()
+            };
+
+            let (color, size) = paint;
+            if color.a <= 0.0 {
+                // Invisible for this feature; with constant paint that means
+                // the whole layer.
+                if !varies {
+                    break;
+                }
                 continue;
             }
 
             match layer.kind {
                 LayerKind::Fill => {
-                    if feature.geom_type != GeomType::Polygon {
-                        continue;
-                    }
-                    if batch_color.is_none() {
-                        let ctx = Ctx {
-                            zoom,
-                            layer: Some(data),
-                            feature: Some(feature),
-                        };
-                        let opacity = layer.paint_number("fill-opacity", &ctx, 1.0) as f32;
-                        let color = layer
-                            .paint_color("fill-color", &ctx, Color::BLACK)
-                            .with_opacity(opacity);
-                        if color.a <= 0.0 {
-                            layer_invisible = true;
-                            continue;
-                        }
-                        batch_color = Some(color);
-                    }
                     let started = std::time::Instant::now();
-                    fill_feature(feature, tile, unify, &mut out.vertices, &mut out.stats);
+                    fill_feature(feature, tile, unify, color, &mut out.vertices, &mut out.stats);
                     out.stats.fill_ms += started.elapsed().as_secs_f32() * 1000.0;
                 }
                 LayerKind::Line => {
-                    if feature.geom_type == GeomType::Point {
+                    if size <= 0.0 {
                         continue;
                     }
-                    if batch_color.is_none() {
-                        let ctx = Ctx {
-                            zoom,
-                            layer: Some(data),
-                            feature: Some(feature),
-                        };
-                        let opacity = layer.paint_number("line-opacity", &ctx, 1.0) as f32;
-                        let color = layer
-                            .paint_color("line-color", &ctx, Color::BLACK)
-                            .with_opacity(opacity);
-                        let width =
-                            layer.paint_number("line-width", &ctx, 1.0) as f32 * paint_scale;
-                        if color.a <= 0.0 || width <= 0.0 {
-                            layer_invisible = true;
-                            continue;
-                        }
-                        batch_color = Some(color);
-                        line_paint = Some(LinePaint {
-                            half_width: width * 0.5 * out.extent as f32 / tile_size as f32,
-                        });
-                    }
-                    let half = line_paint.as_ref().map(|p| p.half_width).unwrap_or(0.0);
                     let started = std::time::Instant::now();
-                    line_feature(feature, tile, unify, half, &mut out.vertices);
+                    line_feature(feature, tile, unify, size, color, &mut out.vertices);
                     out.stats.line_ms += started.elapsed().as_secs_f32() * 1000.0;
                 }
                 LayerKind::Circle => {
-                    if batch_color.is_none() {
-                        let ctx = Ctx {
-                            zoom,
-                            layer: Some(data),
-                            feature: Some(feature),
-                        };
-                        let radius =
-                            layer.paint_number("circle-radius", &ctx, 5.0) as f32 * paint_scale;
-                        let opacity = layer.paint_number("circle-opacity", &ctx, 1.0) as f32;
-                        let color = layer
-                            .paint_color("circle-color", &ctx, Color::BLACK)
-                            .with_opacity(opacity);
-                        if radius <= 0.0 || color.a <= 0.0 {
-                            layer_invisible = true;
-                            continue;
-                        }
-                        batch_color = Some(color);
-                        circle_paint = Some(CirclePaint {
-                            radius: radius * out.extent as f32 / tile_size as f32,
-                        });
+                    if size <= 0.0 {
+                        continue;
                     }
-                    let radius = circle_paint.as_ref().map(|p| p.radius).unwrap_or(0.0);
-                    circle_feature(feature, tile, unify, radius, &mut out.vertices);
+                    circle_feature(feature, tile, unify, size, color, &mut out.vertices);
                 }
                 _ => {}
             }
@@ -248,13 +261,11 @@ pub fn tessellate(
         if added == 0 {
             continue;
         }
-        // One batch per layer: paint varies per feature in principle, but a
-        // single colour per layer is what the overwhelming majority of styles
-        // do, and mixing colours into one draw call needs per-vertex colour.
+        // One batch per layer, preserving painter's order. Colour rides on the
+        // vertices, so a batch is purely a range.
         out.batches.push(Batch {
-            color: batch_color.unwrap_or(Color::BLACK),
-            first_vertex: (start_len / 2) as u32,
-            vertex_count: (added / 2) as u32,
+            first_vertex: (start_len / VERTEX_STRIDE) as u32,
+            vertex_count: (added / VERTEX_STRIDE) as u32,
             layer_id: layer.id.clone(),
         });
     }
@@ -285,10 +296,17 @@ fn signed_area(ring: &[[f32; 2]]) -> f32 {
     sum * 0.5
 }
 
+/// Appends one vertex: position then colour.
+#[inline]
+fn push_vertex(out: &mut Vec<f32>, x: f32, y: f32, color: Color) {
+    out.extend_from_slice(&[x, y, color.r, color.g, color.b, color.a]);
+}
+
 fn fill_feature(
     feature: &model::Feature,
     tile: &DecodedTile<'_>,
     unify: f32,
+    color: Color,
     out: &mut Vec<f32>,
     stats: &mut TessellationStats,
 ) {
@@ -320,8 +338,7 @@ fn fill_feature(
         match earcutr::earcut(&flat, &holes, 2) {
             Ok(indices) => {
                 for i in indices {
-                    out.push(flat[i * 2] as f32);
-                    out.push(flat[i * 2 + 1] as f32);
+                    push_vertex(out, flat[i * 2] as f32, flat[i * 2 + 1] as f32, color);
                 }
             }
             Err(_) => {
@@ -364,6 +381,7 @@ fn line_feature(
     tile: &DecodedTile<'_>,
     unify: f32,
     half_width: f32,
+    color: Color,
     out: &mut Vec<f32>,
 ) {
     let extent = 4096.0_f32;
@@ -389,10 +407,9 @@ fn line_feature(
             let p1 = [a[0] - nx, a[1] - ny];
             let p2 = [b[0] + nx, b[1] + ny];
             let p3 = [b[0] - nx, b[1] - ny];
-            out.extend_from_slice(&[
-                p0[0], p0[1], p1[0], p1[1], p2[0], p2[1],
-                p1[0], p1[1], p3[0], p3[1], p2[0], p2[1],
-            ]);
+            for point in [p0, p1, p2, p1, p3, p2] {
+                push_vertex(out, point[0], point[1], color);
+            }
         }
 
         // Bevel joins: one triangle per interior vertex. Without them a thick
@@ -403,16 +420,16 @@ fn line_feature(
             let d1 = normalise([next[0] - here[0], next[1] - here[1]]);
             let n0 = [-d0[1] * half_width, d0[0] * half_width];
             let n1 = [-d1[1] * half_width, d1[0] * half_width];
-            out.extend_from_slice(&[
-                here[0], here[1],
-                here[0] + n0[0], here[1] + n0[1],
-                here[0] + n1[0], here[1] + n1[1],
-            ]);
-            out.extend_from_slice(&[
-                here[0], here[1],
-                here[0] - n0[0], here[1] - n0[1],
-                here[0] - n1[0], here[1] - n1[1],
-            ]);
+            for point in [
+                here,
+                [here[0] + n0[0], here[1] + n0[1]],
+                [here[0] + n1[0], here[1] + n1[1]],
+                here,
+                [here[0] - n0[0], here[1] - n0[1]],
+                [here[0] - n1[0], here[1] - n1[1]],
+            ] {
+                push_vertex(out, point[0], point[1], color);
+            }
         }
     }
 }
@@ -432,6 +449,7 @@ fn circle_feature(
     tile: &DecodedTile<'_>,
     unify: f32,
     radius: f32,
+    color: Color,
     out: &mut Vec<f32>,
 ) {
     const SEGMENTS: usize = 12;
@@ -442,11 +460,13 @@ fn circle_feature(
             for i in 0..SEGMENTS {
                 let a0 = (i as f32 / SEGMENTS as f32) * std::f32::consts::TAU;
                 let a1 = ((i + 1) as f32 / SEGMENTS as f32) * std::f32::consts::TAU;
-                out.extend_from_slice(&[
-                    c[0], c[1],
-                    c[0] + a0.cos() * radius, c[1] + a0.sin() * radius,
-                    c[0] + a1.cos() * radius, c[1] + a1.sin() * radius,
-                ]);
+                for point in [
+                    [c[0], c[1]],
+                    [c[0] + a0.cos() * radius, c[1] + a0.sin() * radius],
+                    [c[0] + a1.cos() * radius, c[1] + a1.sin() * radius],
+                ] {
+                    push_vertex(out, point[0], point[1], color);
+                }
             }
         }
     }
@@ -504,7 +524,9 @@ mod tests {
         assert_eq!(result.triangle_count(), 2);
         assert_eq!(result.batches.len(), 1);
         assert_eq!(result.batches[0].vertex_count, 6);
-        assert!((result.batches[0].color.r - 1.0).abs() < 0.01);
+        // Colour rides on every vertex now.
+        assert!((result.vertices[2] - 1.0).abs() < 0.01, "red channel");
+        assert!(result.vertices[3].abs() < 0.01, "green channel");
     }
 
     #[test]
@@ -565,6 +587,49 @@ mod tests {
         let result = tessellate(&style, 10.0, 512, &decoded(&tile));
         // Two segments (2 triangles each) plus one bevel join (2 triangles).
         assert_eq!(result.triangle_count(), 6);
+    }
+
+    #[test]
+    fn per_feature_colours_are_kept_apart() {
+        // The MapLibre demo style paints each country through a `match`, and
+        // collapsing that to one colour per layer disagreed with the CPU
+        // renderer on 37% of a tile.
+        let style = style_with(json!({
+            "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
+            "paint": {
+                "fill-color": ["match", ["get", "kind"], "a", "#ff0000", "#0000ff"]
+            }
+        }));
+        let layer = model::Layer::from_tables(
+            "poly".into(),
+            4096,
+            vec!["kind".into()],
+            vec![model::Value::String("a".into()), model::Value::String("b".into())],
+            vec![
+                model::Feature::new(
+                    Some(1), GeomType::Polygon,
+                    vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]]],
+                    vec![0, 0],
+                ),
+                model::Feature::new(
+                    Some(2), GeomType::Polygon,
+                    vec![vec![[200.0, 200.0], [300.0, 200.0], [300.0, 300.0], [200.0, 300.0]]],
+                    vec![0, 1],
+                ),
+            ],
+        );
+        let tile = model::Tile { layers: vec![layer] };
+        let result = tessellate(&style, 10.0, 512, &decoded(&tile));
+
+        let stride = VERTEX_STRIDE;
+        let reds: Vec<f32> = (0..result.vertex_count())
+            .map(|i| result.vertices[i * stride + 2])
+            .collect();
+        let blues: Vec<f32> = (0..result.vertex_count())
+            .map(|i| result.vertices[i * stride + 4])
+            .collect();
+        assert!(reds.iter().any(|r| *r > 0.9), "the first feature should be red");
+        assert!(blues.iter().any(|b| *b > 0.9), "the second should be blue");
     }
 
     #[test]

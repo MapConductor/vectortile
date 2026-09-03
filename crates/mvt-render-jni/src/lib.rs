@@ -420,7 +420,7 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
         let tessellate_ms = tessellate_started.elapsed().as_secs_f32() * 1000.0;
 
         let mut packed: Vec<f32> =
-            Vec::with_capacity(13 + result.batches.len() * 6 + result.vertices.len());
+            Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
         packed.push(result.extent as f32);
         match result.background {
             Some(color) => packed.extend_from_slice(&[1.0, color.r, color.g, color.b, color.a]),
@@ -437,8 +437,8 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
         ]);
         for batch in &result.batches {
             packed.extend_from_slice(&[
-                batch.color.r, batch.color.g, batch.color.b, batch.color.a,
-                batch.first_vertex as f32, batch.vertex_count as f32,
+                batch.first_vertex as f32,
+                batch.vertex_count as f32,
             ]);
         }
         packed.extend_from_slice(&result.vertices);
@@ -501,7 +501,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeRen
     )
 }
 
-#[cfg(feature = "glbench-compat")]
+#[cfg(feature = "tessellate")]
 /// Encodes a straight-alpha RGBA8 direct buffer as PNG.
 ///
 /// Takes a *direct* `ByteBuffer` on purpose: the GPU path's `glReadPixels`

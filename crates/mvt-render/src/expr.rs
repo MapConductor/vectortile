@@ -84,6 +84,36 @@ impl Val {
     }
 }
 
+/// Whether an expression's value can differ between features of a layer.
+///
+/// Lets a caller evaluate once per layer when the answer cannot change, and
+/// per feature only when it can. Zoom-dependent expressions are common and
+/// constant within a tile; feature-dependent ones are rarer but must not be
+/// collapsed, or every feature in a layer gets the first one's paint.
+pub fn depends_on_feature(json: &Json) -> bool {
+    match json {
+        Json::Array(items) => {
+            match items.first().and_then(Json::as_str) {
+                Some("get" | "has" | "id" | "geometry-type") => return true,
+                // Legacy filter-style operands name a property directly, so a
+                // bare string in the first argument slot is feature state.
+                Some("==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "!in") => {
+                    if matches!(items.get(1), Some(Json::String(_))) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            items.iter().any(depends_on_feature)
+        }
+        Json::Object(map) => {
+            // Legacy `{ "property": … , "stops": … }` functions.
+            map.contains_key("property") || map.values().any(depends_on_feature)
+        }
+        _ => false,
+    }
+}
+
 /// Everything an expression is allowed to see.
 pub struct Ctx<'a> {
     pub zoom: f64,
