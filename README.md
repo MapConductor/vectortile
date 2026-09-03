@@ -33,10 +33,14 @@ Warm render of tile 0/0/0 — the heaviest in the demo style, 722 features acros
 | | median | range |
 | --- | --- | --- |
 | Web (Chromium, wasm, through the SW + worker round trip) | 98 ms | 87–363 |
-| Android (Lenovo TB520FU, arm64, Android 16) | 103 ms | 103–106 |
+| Android (Lenovo TB520FU tablet, Android 16) | 103 ms | 103–106 |
+| Android (Pixel 5a, Android 14) | 312 ms | — |
 | iOS simulator (iPhone 17 Pro, Release) | 87–195 ms | 77–5900 |
 
-The Android figure is solid — a 3 ms spread across ten runs on a real device.
+The Android figures are solid — a 3 ms spread across ten runs on the tablet.
+The 3x gap between the two devices is the honest range for mid-range hardware,
+and 312 ms per tile is slow enough to matter for a map being panned: rendering
+belongs off the UI thread there for the same reason it does on the web.
 **The iOS figure is not.** Repeated runs on the simulator gave medians from 87 ms
 to 195 ms with occasional multi-second outliers, tracking whatever else the host
 Mac was doing. Treat it as "the same order of magnitude as Android" and nothing
@@ -168,6 +172,17 @@ producing empty tiles. Mapbox-only layer types (`sky`, `model`,
 
 ## Design decisions
 
+### The decoder is the only format-specific part
+
+`src/model.rs` holds the decoded tile — layers, features, geometry, properties —
+and the style parser, expression evaluator and rasteriser consume only that. The
+MVT decoder's job ends at producing one. A second wire format is a second
+decoder and nothing else, which is what makes the single-module decision below
+workable rather than merely convenient.
+
+The renderer is tested against a tile built by hand, with no decoder in the call
+path at all, so the seam cannot rot unnoticed.
+
 ### One module per platform, formats behind Cargo features
 
 Not `*-mvt-tile` / `*-mlt-tile` split by tile format. Three reasons, measured:
@@ -224,6 +239,7 @@ every real HTTP client undoes it transparently.
 
 ```
 crates/mvt-render/        platform-independent core
+  src/model.rs            decoded tile model — the seam between formats and drawing
   src/mvt.rs              hand-rolled MVT/protobuf decoder
   src/style.rs            style.json subset
   src/expr.rs             expression evaluator

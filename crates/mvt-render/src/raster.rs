@@ -10,7 +10,7 @@ use tiny_skia::{
 
 use crate::color::Color;
 use crate::expr::Ctx;
-use crate::mvt::{self, GeomType};
+use crate::model::{self, GeomType};
 use crate::style::{Layer, LayerKind, Style};
 
 /// The reference tile size the style spec's pixel units are defined against.
@@ -19,7 +19,7 @@ const REFERENCE_TILE_SIZE: f32 = 512.0;
 /// A source tile that has been fetched and decoded, ready to draw.
 pub struct DecodedTile {
     pub source_id: String,
-    pub tile: mvt::Tile,
+    pub tile: model::Tile,
     /// Magnification when this tile stands in for a deeper zoom level.
     pub scale: f32,
     pub offset_x: f32,
@@ -119,7 +119,7 @@ fn draw_background(pixmap: &mut Pixmap, layer: &Layer, zoom: f64) {
 fn draw_data_layer(
     pixmap: &mut Pixmap,
     layer: &Layer,
-    data: &mvt::Layer,
+    data: &model::Layer,
     transform: &Transform,
     zoom: f64,
     paint_scale: f32,
@@ -152,7 +152,7 @@ fn draw_data_layer(
 
 /// Builds a closed path from every ring, keeping each ring's winding direction
 /// so the non-zero fill rule cuts holes without us classifying rings.
-fn build_polygon(feature: &mvt::Feature, transform: &Transform) -> Option<tiny_skia::Path> {
+fn build_polygon(feature: &model::Feature, transform: &Transform) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
     let mut any = false;
     for ring in &feature.parts {
@@ -172,7 +172,7 @@ fn build_polygon(feature: &mvt::Feature, transform: &Transform) -> Option<tiny_s
     pb.finish()?.transform(*transform)
 }
 
-fn build_polyline(feature: &mvt::Feature, transform: &Transform) -> Option<tiny_skia::Path> {
+fn build_polyline(feature: &model::Feature, transform: &Transform) -> Option<tiny_skia::Path> {
     let mut pb = PathBuilder::new();
     let mut any = false;
     for line in &feature.parts {
@@ -194,7 +194,7 @@ fn build_polyline(feature: &mvt::Feature, transform: &Transform) -> Option<tiny_
 fn draw_fill(
     pixmap: &mut Pixmap,
     layer: &Layer,
-    feature: &mvt::Feature,
+    feature: &model::Feature,
     transform: &Transform,
     ctx: &Ctx,
     paint_scale: f32,
@@ -251,7 +251,7 @@ fn draw_fill(
 fn draw_line(
     pixmap: &mut Pixmap,
     layer: &Layer,
-    feature: &mvt::Feature,
+    feature: &model::Feature,
     transform: &Transform,
     ctx: &Ctx,
     paint_scale: f32,
@@ -310,7 +310,7 @@ fn draw_line(
 fn draw_circle(
     pixmap: &mut Pixmap,
     layer: &Layer,
-    feature: &mvt::Feature,
+    feature: &model::Feature,
     transform: &Transform,
     ctx: &Ctx,
     paint_scale: f32,

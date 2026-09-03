@@ -6,6 +6,7 @@ declare global {
             ready: Promise<{ template: string; renderMs: number }>;
             template?: string;
             mode?: 'worker' | 'inline';
+            mapIdle?: Promise<void>;
             setColor?: (layerId: string, property: string, value: string) => Promise<number>;
             resetColors?: () => Promise<void>;
             listColors?: () => { layerId: string; property: string; isExpression: boolean }[];

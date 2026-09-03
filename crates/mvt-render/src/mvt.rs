@@ -5,86 +5,11 @@
 //! build-time `protoc` requirement into three CI pipelines (Android, iOS,
 //! wasm). The earlier `vector-tile-rendering` prototype hit exactly that
 //! friction — see its WORKLOG step 8.
+//!
+//! This module knows about protobuf and nothing else. It produces
+//! [`crate::model::Tile`], which is what the rest of the crate draws from.
 
-use std::collections::HashMap;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GeomType {
-    Unknown,
-    Point,
-    LineString,
-    Polygon,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    String(String),
-    Float(f64),
-    Int(i64),
-    Uint(u64),
-    Bool(bool),
-}
-
-impl Value {
-    pub fn as_f64(&self) -> Option<f64> {
-        match self {
-            Value::Float(v) => Some(*v),
-            Value::Int(v) => Some(*v as f64),
-            Value::Uint(v) => Some(*v as f64),
-            Value::Bool(v) => Some(if *v { 1.0 } else { 0.0 }),
-            Value::String(_) => None,
-        }
-    }
-}
-
-/// A feature's geometry as decoded rings/parts, in tile-local units (0..extent).
-///
-/// For points each part holds a single coordinate; for linestrings each part is
-/// one line; for polygons each part is one ring, with winding direction
-/// preserved so the non-zero fill rule cuts holes without us classifying rings.
-pub type Parts = Vec<Vec<[f32; 2]>>;
-
-#[derive(Debug, Clone)]
-pub struct Feature {
-    pub id: Option<u64>,
-    pub geom_type: GeomType,
-    /// Flat (key_index, value_index) pairs into the owning layer's tables.
-    pub tags: Vec<u32>,
-    pub parts: Parts,
-}
-
-#[derive(Debug, Clone)]
-pub struct Layer {
-    pub name: String,
-    pub extent: u32,
-    pub keys: Vec<String>,
-    pub values: Vec<Value>,
-    pub features: Vec<Feature>,
-    key_index: HashMap<String, u32>,
-}
-
-impl Layer {
-    /// Look up a property on one of this layer's features.
-    pub fn property<'a>(&'a self, feature: &Feature, key: &str) -> Option<&'a Value> {
-        let ki = *self.key_index.get(key)?;
-        feature
-            .tags
-            .chunks_exact(2)
-            .find(|pair| pair[0] == ki)
-            .and_then(|pair| self.values.get(pair[1] as usize))
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct Tile {
-    pub layers: Vec<Layer>,
-}
-
-impl Tile {
-    pub fn layer(&self, name: &str) -> Option<&Layer> {
-        self.layers.iter().find(|l| l.name == name)
-    }
-}
+use crate::model::{Feature, GeomType, Layer, Parts, Tile, Value};
 
 #[derive(Debug)]
 pub struct DecodeError(pub &'static str);
@@ -258,20 +183,9 @@ fn decode_layer(buf: &[u8]) -> Result<Layer> {
         features.push(decode_feature(bytes)?);
     }
 
-    let key_index = keys
-        .iter()
-        .enumerate()
-        .map(|(i, k)| (k.clone(), i as u32))
-        .collect();
-
-    Ok(Layer {
-        name,
-        extent,
-        keys,
-        values,
-        features,
-        key_index,
-    })
+    // MVT's key/value tables are exactly the shape the model wants, so this
+    // hands them over without an intermediate representation.
+    Ok(Layer::from_tables(name, extent, keys, values, features))
 }
 
 fn decode_value(buf: &[u8]) -> Result<Value> {
@@ -339,12 +253,7 @@ fn decode_feature(buf: &[u8]) -> Result<Feature> {
     }
 
     let parts = decode_geometry(&geometry, geom_type)?;
-    Ok(Feature {
-        id,
-        geom_type,
-        tags,
-        parts,
-    })
+    Ok(Feature::new(id, geom_type, parts, tags))
 }
 
 /// Decodes the command/parameter integer stream into cursor-relative parts.

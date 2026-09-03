@@ -87,6 +87,8 @@ declare global {
             ready: Promise<{ template: string; renderMs: number }>;
             template?: string;
             mode?: 'worker' | 'inline';
+            /** Resolves once the map has finished its first tile load. */
+            mapIdle?: Promise<void>;
             /** Applies a colour and returns how long the restyle took. */
             setColor?: (layerId: string, property: string, value: string) => Promise<number>;
             resetColors?: () => Promise<void>;
@@ -232,6 +234,11 @@ async function boot(): Promise<{ template: string; renderMs: number }> {
         },
         center: STYLE.center,
         zoom: STYLE.zoom,
+    });
+    // Tests that count network activity need the initial viewport load to be
+    // over first, otherwise they measure the map rather than what they meant to.
+    window.__harness.mapIdle = new Promise<void>((resolve) => {
+        map.once('idle', () => resolve());
     });
     log('raster layer mounted');
 

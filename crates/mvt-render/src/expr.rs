@@ -13,7 +13,7 @@
 use serde_json::Value as Json;
 
 use crate::color::{self, Color};
-use crate::mvt::{Feature, GeomType, Layer, Value as MvtValue};
+use crate::model::{Feature, GeomType, Layer, Value as TileValue};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Val {
@@ -62,13 +62,13 @@ impl Val {
         }
     }
 
-    fn from_mvt(value: &MvtValue) -> Val {
+    fn from_mvt(value: &TileValue) -> Val {
         match value {
-            MvtValue::String(s) => Val::Str(s.clone()),
-            MvtValue::Float(f) => Val::Num(*f),
-            MvtValue::Int(i) => Val::Num(*i as f64),
-            MvtValue::Uint(u) => Val::Num(*u as f64),
-            MvtValue::Bool(b) => Val::Bool(*b),
+            TileValue::String(s) => Val::Str(s.clone()),
+            TileValue::Float(f) => Val::Num(*f),
+            TileValue::Int(i) => Val::Num(*i as f64),
+            TileValue::Uint(u) => Val::Num(*u as f64),
+            TileValue::Bool(b) => Val::Bool(*b),
         }
     }
 

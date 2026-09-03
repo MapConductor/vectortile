@@ -53,7 +53,11 @@ test.describe('live restyling', () => {
 
         const before = await tileAverage(page, tileUrl(template));
 
-        // Only start counting once the initial load has settled.
+        // The map is still pulling its first viewport at this zoom. Wait for it
+        // to settle, or the counter below measures the map's loading rather
+        // than what the restyle caused.
+        await page.evaluate(() => window.__harness.mapIdle);
+
         const vectorRequests: string[] = [];
         page.on('request', (request) => {
             const url = request.url();

@@ -29,6 +29,7 @@
 pub mod color;
 pub mod expr;
 pub mod mercator;
+pub mod model;
 pub mod mvt;
 pub mod raster;
 pub mod style;
@@ -388,6 +389,53 @@ mod tests {
             .unwrap()
             .0;
         assert_eq!(pixel(&pixmap, 220, 230), (255, 255, 255, 255));
+    }
+
+    /// Renders from a tile built by hand, with no decoder anywhere in the call
+    /// path. This is what makes a second wire format (MapLibre Tile) a matter
+    /// of adding a decoder rather than touching the renderer: if this compiles
+    /// and draws, nothing downstream of `model` knows what MVT is.
+    #[test]
+    fn renders_from_a_hand_built_tile_without_any_decoder() {
+        use model::{Feature, GeomType, Layer, Tile, Value};
+
+        // A square covering the left half of the tile, tagged class=ocean so
+        // the test style's filter accepts it.
+        let layer = Layer::from_tables(
+            "water".into(),
+            4096,
+            vec!["class".into()],
+            vec![Value::String("ocean".into())],
+            vec![Feature::new(
+                Some(7),
+                GeomType::Polygon,
+                vec![vec![
+                    [0.0, 0.0],
+                    [2048.0, 0.0],
+                    [2048.0, 4096.0],
+                    [0.0, 4096.0],
+                ]],
+                vec![0, 0],
+            )],
+        );
+
+        let decoded = vec![DecodedTile {
+            source_id: "src".into(),
+            tile: Tile {
+                layers: vec![layer],
+            },
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }];
+
+        let (pixmap, stats) = raster::render(&test_style(), 10.0, 512, &decoded).expect("render");
+        assert_eq!(stats.features_drawn, 1);
+
+        let (r, g, b, _) = pixel(&pixmap, 100, 100);
+        assert!(b > 200 && r < 50, "water fill, got ({r},{g},{b})");
+        // The right half is background only.
+        assert_eq!(pixel(&pixmap, 400, 480), (255, 255, 255, 255));
     }
 
     #[test]
