@@ -33,6 +33,8 @@ pub mod model;
 pub mod mvt;
 pub mod raster;
 pub mod style;
+#[cfg(feature = "tessellate")]
+pub mod tessellate;
 pub mod tile;
 
 #[cfg(test)]

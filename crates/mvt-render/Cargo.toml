@@ -9,3 +9,10 @@ description = "Platform-independent MapLibre-style vector tile rasterizer"
 tiny-skia.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+earcutr = { version = "0.5", optional = true }
+
+[features]
+default = []
+# Triangulation for the OpenGL ES experiment. Off by default: the CPU
+# rasteriser fills paths directly and never needs triangles.
+tessellate = ["dep:earcutr"]
