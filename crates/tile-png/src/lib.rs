@@ -10,10 +10,21 @@
 //! which on the GPU vector tile path was the entire remaining cost — the draw
 //! and readback together take under 4 ms.
 //!
-//! Compression is tuned for tile serving, not archival: tiles are ephemeral
-//! payloads, so fast compression beats a smaller file. The result runs roughly
-//! 1.7-2.9x larger than the platform encoder's, which costs capacity in the
-//! byte-budgeted tile caches that hold them.
+//! Compression is tuned for tile serving, not archival, and the levels were
+//! compared on tiles the renderer actually produced. On a dense marker tile:
+//!
+//! ```text
+//!   Fast      15.8 ms   1093 KB     <- what this uses
+//!   Default  107.0 ms    450 KB
+//!   Best     271.5 ms    451 KB
+//!   Bitmap.compress  165.0 ms  377 KB
+//! ```
+//!
+//! Default buys 2.4x on size for 6.8x on time, which is the wrong way round for
+//! a tile that is about to be handed to a local server; Best is slower than
+//! Default for the same bytes and is never the answer. The cost of Fast is
+//! real, though: files run 2.3-3.3x larger than the platform encoder's, and the
+//! tile caches that hold them are budgeted in bytes, so they hold fewer.
 
 use png::{BitDepth, ColorType, Compression, Encoder, FilterType};
 
