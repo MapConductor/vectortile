@@ -1,0 +1,23 @@
+# Android needs its shared libraries laid out for 16 KB pages.
+#
+# Devices from Android 15 on can boot with a 16 KB page size, and a library
+# whose LOAD segments are aligned to the old 4 KB boundary cannot be mapped on
+# them at all — the build reports "not compatible with 16 KB devices" and the
+# app fails to load the library on such hardware. NDK r28's clang defaults to
+# this; r27, which this repo builds with, does not.
+#
+# Set here rather than in the build scripts so a new build path cannot forget
+# it: the failure only shows up on 16 KB hardware or in a bundle check, long
+# after the library was produced.
+
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.armv7-linux-androideabi]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.i686-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
