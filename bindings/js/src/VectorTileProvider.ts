@@ -242,8 +242,8 @@ export class VectorTileProvider implements TileProvider {
      *
      * Fetched vector tiles are kept: only the paint changes, so recolouring a
      * style costs a re-rasterise and no network traffic. Callers still need to
-     * make the map refetch the *raster* tiles — pass a new `cacheKey` to
-     * `urlTemplate()` and point the raster source at it.
+     * make the map refetch the *raster* tiles — re-run `attachTo()` with a new
+     * `cacheKey` and point the raster source at the template it returns.
      */
     async setStyle(style: string | object): Promise<string[]> {
         if (this.disposed) return this.diagnostics;
@@ -269,10 +269,16 @@ export class VectorTileProvider implements TileProvider {
     /**
      * Registers this provider on a tile server and returns the URL template a
      * raster layer should point at.
+     *
+     * Pass a `cacheKey` that changes whenever the style does. Without one a
+     * restyle re-renders correctly and the map still shows the old colours,
+     * because the raster tiles it already holds are keyed by a URL that did not
+     * change — and that failure looks exactly like a renderer that ignored
+     * `setStyle`.
      */
-    attachTo(server: TileServerLike, routeId: string): string {
+    attachTo(server: TileServerLike, routeId: string, cacheKey?: string): string {
         server.register(routeId, this);
-        return server.urlTemplate({ routeId, tileSize: this.tileSize });
+        return server.urlTemplate({ routeId, tileSize: this.tileSize, cacheKey });
     }
 
     /** Releases the renderer and its worker. The provider stops serving tiles. */

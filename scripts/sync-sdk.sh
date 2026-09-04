@@ -36,18 +36,23 @@ sync_ios() {
 }
 
 sync_web() {
-    local dest="$sdks/react-sdk/react-vectortile"
+    # The framework-neutral package. React is one 120-line component on top of
+    # this, and nothing here knows about it — the provider talks to a host tile
+    # server through the structural TileServerLike interface, so the same build
+    # serves React, Vue, or plain script tags.
+    local dest="$sdks/react-sdk/vectortile"
     [[ -d "$dest" ]] || { echo "skip web: $dest not found"; return; }
-    mkdir -p "$dest/vendor"
-    rm -rf "$dest/vendor/pkg" "$dest/vendor/dist"
-    cp -R "$root/bindings/js/pkg" "$dest/vendor/pkg"
-    cp -R "$root/bindings/js/dist" "$dest/vendor/dist"
+    rm -rf "$dest/pkg" "$dest/dist"
+    cp -R "$root/bindings/js/pkg" "$dest/pkg"
+    cp -R "$root/bindings/js/dist" "$dest/dist"
+    cp "$root/bindings/js/README.md" "$dest/README.md" 2>/dev/null || true
     # wasm-pack writes a `.gitignore` containing `*` into its output directory.
     # Copied verbatim it makes the vendored wasm untrackable, which is how the
     # package ends up unbuildable from a clean checkout.
-    rm -f "$dest/vendor/pkg/.gitignore"
+    rm -f "$dest/pkg/.gitignore"
     echo "web     -> $dest"
 }
+
 
 sync_android
 sync_ios
