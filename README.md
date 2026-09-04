@@ -212,6 +212,37 @@ The GPU path benefits most because filtering was nearly all of its CPU cost:
 what remains on the CPU is ~94 ms of tessellation, with drawing, readback and
 bitmap conversion on the GPU side at under 10 ms combined.
 
+### GPU rendering
+
+Both mobile modules can draw on the GPU instead: Android through OpenGL ES 2
+on an offscreen EGL surface, iOS through Metal. The renderer emits triangles in
+tile coordinates with colour on the vertices, the platform draws them with
+4x MSAA, and the native PNG encoder — not the platform one — turns the pixels
+back into bytes.
+
+Measured on the same z14 Tokyo tile, warm, per tile:
+
+| | CPU | GPU |
+| --- | --- | --- |
+| iPad Pro 11" (Metal) | 79.0 ms | **19.9 ms** |
+| Pixel 5a (GL ES 2) | 259.8 ms | **147.7 ms** |
+
+The speed is not really the argument. A map is never the only thing an app is
+doing, and the CPU is what everything else is competing for; the GPU path moves
+the expensive half of a tile onto a processor that is usually idle. What stays
+on the CPU is decode and tessellation — 3.7 ms and 8.7 ms on the iPad.
+
+Both platforms agree with the CPU renderer to 0.00% of 8x8 block averages.
+They disagree on individual *edge* pixels, by construction: MSAA resolves
+coverage by sampling and tiny-skia computes it analytically. Comparing raw
+pixels measures how much coastline a tile has rather than whether the render is
+right — on a z0 world tile that reads as 3.4% and on a street tile as 0.05%,
+for renders that are equally correct. The worst block-average channel delta
+lands at 18/255 on Android and 12/255 on the iPad, from two unrelated graphics
+APIs, which is what a structural difference looks like rather than a bug.
+
+Symbol layers are still not drawn on either path.
+
 ### Mapbox styles
 
 MapLibre's style spec is a fork of Mapbox's v8 spec (MapLibre GL JS split from
