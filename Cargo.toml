@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/mvt-render",
+    "crates/tile-png",
+    "crates/tile-png-jni",
     "crates/mvt-render-wasm",
     "crates/mvt-render-jni",
     "crates/mvt-render-ffi",
@@ -25,3 +27,23 @@ codegen-units = 1
 # code ships inside someone else's Android or iOS app, where a panic must
 # surface as an exception or an error code — not take the host process down.
 # The FFI crates catch unwinds at their boundaries.
+strip = true
+
+# The encoder is the exception to the size-first default above. It ships in the
+# SDK core precisely because it is faster than the platform encoder, so building
+# it for size would be building away the reason it is there. Stripping already
+# recovers more bytes than opt-level "z" saves here.
+[profile.release.package.tile-png]
+opt-level = 3
+
+[profile.release.package.png]
+opt-level = 3
+
+[profile.release.package.fdeflate]
+opt-level = 3
+
+[profile.release.package.flate2]
+opt-level = 3
+
+[profile.release.package.miniz_oxide]
+opt-level = 3

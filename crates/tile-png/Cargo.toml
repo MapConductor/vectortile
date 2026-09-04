@@ -1,0 +1,12 @@
+[package]
+name = "tile-png"
+version = "0.1.0"
+edition = "2021"
+description = "PNG encoding tuned for map tiles"
+license = "Apache-2.0"
+
+[dependencies]
+png = "0.17"
+
+[dev-dependencies]
+tiny-skia = "0.11"

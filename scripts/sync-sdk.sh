@@ -22,6 +22,17 @@ sync_android() {
     echo "android -> $dest"
 }
 
+sync_android_core() {
+    # The PNG encoder, which lives in the SDK core rather than the vector tile
+    # module: MarkerTileRenderer needs it, and core cannot depend on a module
+    # that depends on core.
+    local dest="$sdks/android-sdk/android-sdk-core/src/main/jniLibs"
+    [[ -d "$sdks/android-sdk/android-sdk-core" ]] || { echo "skip android core: not found"; return; }
+    mkdir -p "$dest"
+    cp -R "$root/bindings/android/core/jniLibs/." "$dest/"
+    echo "android core -> $dest"
+}
+
 sync_ios() {
     local dest="$sdks/ios-sdk/ios-vectortile"
     [[ -d "$dest" ]] || { echo "skip ios: $dest not found"; return; }
@@ -55,5 +66,6 @@ sync_web() {
 
 
 sync_android
+sync_android_core
 sync_ios
 sync_web
