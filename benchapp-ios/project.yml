@@ -6,6 +6,8 @@ options:
 packages:
   MapConductorVectorTile:
     path: ../bindings/ios
+  MapConductorCore:
+    path: ../../ios-sdk/ios-sdk-core
 targets:
   VTBench:
     type: application
@@ -20,6 +22,14 @@ targets:
     dependencies:
       - package: MapConductorVectorTile
         product: MapConductorVectorTile
+      # The marker tile renderer, so the bench can time a real tile on device.
+      # It also brings in TilePng, whose C symbols the bridging header declares
+      # so the encoder can be timed against the platform's directly — the core
+      # keeps its Swift wrapper internal, and a benchmark is no reason to widen
+      # a public API.
+      - package: MapConductorCore
+        product: MapConductorCore
+
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.mapconductor.vtbench
@@ -32,3 +42,5 @@ targets:
         # generated project; a plain single binary signs cleanly.
         ENABLE_PREVIEWS: NO
         ENABLE_DEBUG_DYLIB: NO
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/VTBench-Bridging-Header.h
+        HEADER_SEARCH_PATHS: $(SRCROOT)/Sources

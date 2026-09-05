@@ -1,6 +1,9 @@
+import CoreGraphics
 import CryptoKit
+import MapConductorCore
 import MapConductorVectorTile
 import SwiftUI
+import UIKit
 
 @main
 struct VTBenchApp: App {
@@ -151,6 +154,13 @@ struct ContentView: View {
                 (CFAbsoluteTimeGetCurrent() - restyleStarted) * 1000, restyled.count
             ))
 
+            // Marker tiles, on this device rather than the simulator. The
+            // simulator runs on the Mac's CPU, where both encoders are fast
+            // enough that the comparison says little about an iPad.
+            for line in markerTileReport() {
+                log(line)
+            }
+
             let documents = FileManager.default
                 .urls(for: .documentDirectory, in: .userDomainMask)[0]
             try png.write(to: documents.appendingPathComponent("tokyo.png"))
@@ -221,4 +231,91 @@ private func blockDifference(_ a: [UInt8], _ b: [UInt8], size: Int) -> (Double, 
         }
     }
     return (Double(differing) * 100 / Double(blocks * blocks), worst)
+}
+
+
+/// Times the marker tile path and the two PNG encoders on real hardware.
+private func markerTileReport() -> [String] {
+    var lines: [String] = []
+
+    func median(_ samples: [Double]) -> Double { samples.sorted()[samples.count / 2] }
+
+    for markerCount in [2_000, 20_000] {
+        let manager = MarkerManager<Int>.defaultManager()
+        var seed: UInt64 = 12345
+        func next() -> Double {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double(seed >> 11) / Double(1 << 53)
+        }
+        for _ in 0..<markerCount {
+            let position = GeoPoint(latitude: 35.5 + next() * 0.4,
+                                    longitude: 139.5 + next() * 0.5)
+            manager.registerEntity(MarkerEntity<Int>(
+                marker: nil, state: MarkerState(position: position),
+                visible: true, isRendered: true, tiling: true
+            ))
+        }
+
+        for (z, x, y) in [(12, 3638, 1612), (6, 56, 25)] {
+            var png: Data?
+            // A fresh renderer per round: its cache would answer every call
+            // after the first, which is not what this measures.
+            let samples = (0..<3).map { _ -> Double in
+                let renderer = MarkerTileRenderer<Int>(markerManager: manager, tileSize: 512)
+                let started = CFAbsoluteTimeGetCurrent()
+                png = renderer.renderTile(request: TileRequest(x: x, y: y, z: z))
+                return (CFAbsoluteTimeGetCurrent() - started) * 1000
+            }
+            guard let png, let image = UIImage(data: png), let cgImage = image.cgImage else {
+                lines.append("markertile n=\(markerCount) z=\(z) EMPTY")
+                continue
+            }
+
+            // Both encoders on the same pixels, so the comparison is not about
+            // what the tile happened to contain.
+            let width = cgImage.width
+            let height = cgImage.height
+            var pixels = [UInt8](repeating: 0, count: width * height * 4)
+            pixels.withUnsafeMutableBytes { raw in
+                CGContext(
+                    data: raw.baseAddress, width: width, height: height,
+                    bitsPerComponent: 8, bytesPerRow: width * 4,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                )?.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+            }
+
+            var platformBytes = 0
+            let platform = median((0..<5).map { _ in
+                let started = CFAbsoluteTimeGetCurrent()
+                let data = image.pngData()
+                let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                platformBytes = data?.count ?? 0
+                return elapsed
+            })
+
+            var rustBytes = 0
+            let rust = median((0..<5).map { _ in
+                var scratch = pixels
+                var outPointer: UnsafeMutablePointer<UInt8>?
+                var outLength = 0
+                let started = CFAbsoluteTimeGetCurrent()
+                _ = scratch.withUnsafeMutableBufferPointer { buffer in
+                    tile_png_encode(buffer.baseAddress, UInt32(width), UInt32(height), 1,
+                                    &outPointer, &outLength)
+                }
+                let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                rustBytes = outLength
+                if let outPointer { tile_png_buffer_free(outPointer, outLength) }
+                return elapsed
+            })
+
+            lines.append(String(
+                format: "markertile n=%d z=%d render=%.1fms tile=%dpx | png platform=%.1fms/%dB rust=%.1fms/%dB",
+                markerCount, z, median(samples), width,
+                platform, platformBytes, rust, rustBytes
+            ))
+        }
+    }
+    return lines
 }
