@@ -375,5 +375,70 @@ private func markerTileReport() -> [String] {
             ))
         }
     }
+    lines.append(contentsOf: drawPathReport())
     return lines
+}
+
+/// Two ways to build the same offscreen tile, at the same size and blit count.
+///
+/// The renderer's own profile says the draw loop costs 81 ms while the block
+/// containing it costs 1739 ms, for a fixed-size buffer — so the cost is not
+/// the loop and not the allocation. The suspicion is that
+/// UIGraphicsImageRenderer records the draws and replays them when the image is
+/// materialised; a plain bitmap context would rasterise as it goes.
+private func drawPathReport() -> [String] {
+    let side = 612
+    let iconPx = 44
+    let count = 20_000
+
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    format.opaque = false
+    let icon = UIGraphicsImageRenderer(
+        size: CGSize(width: iconPx, height: iconPx), format: format
+    ).image { context in
+        UIColor(red: 0.16, green: 0.35, blue: 0.78, alpha: 0.9).setFill()
+        context.cgContext.fillEllipse(
+            in: CGRect(x: 0, y: 0, width: iconPx, height: iconPx)
+        )
+    }
+    guard let iconCG = icon.cgImage else { return ["drawpath: no icon"] }
+
+    func destination(_ index: Int) -> CGRect {
+        CGRect(x: CGFloat(index % 500), y: CGFloat((index / 500) % 500),
+               width: CGFloat(iconPx), height: CGFloat(iconPx))
+    }
+
+    func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
+
+    // (a) What the renderer does today.
+    let renderer = median((0..<3).map { _ in
+        let started = CFAbsoluteTimeGetCurrent()
+        _ = UIGraphicsImageRenderer(
+            size: CGSize(width: side, height: side), format: format
+        ).image { _ in
+            for index in 0..<count { icon.draw(in: destination(index)) }
+        }
+        return (CFAbsoluteTimeGetCurrent() - started) * 1000
+    })
+
+    // (b) A bitmap context we own, drawing the CGImage directly.
+    var pixels = [UInt8](repeating: 0, count: side * side * 4)
+    let bitmap = median((0..<3).map { _ in
+        let started = CFAbsoluteTimeGetCurrent()
+        pixels.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: side, height: side,
+                bitsPerComponent: 8, bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return }
+            context.clear(CGRect(x: 0, y: 0, width: side, height: side))
+            for index in 0..<count { context.draw(iconCG, in: destination(index)) }
+        }
+        return (CFAbsoluteTimeGetCurrent() - started) * 1000
+    })
+
+    return [String(format: "drawpath n=%d side=%d imageRenderer=%.0fms bitmapContext=%.0fms",
+                   count, side, renderer, bitmap)]
 }
