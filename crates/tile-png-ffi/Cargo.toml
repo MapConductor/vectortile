@@ -1,0 +1,13 @@
+[package]
+name = "tile-png-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI for tile-png, for the iOS SDK core"
+license = "Apache-2.0"
+
+[lib]
+name = "tile_png_ffi"
+crate-type = ["staticlib"]
+
+[dependencies]
+tile-png = { path = "../tile-png" }

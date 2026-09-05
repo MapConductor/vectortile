@@ -4,6 +4,7 @@ members = [
     "crates/mvt-render",
     "crates/tile-png",
     "crates/tile-png-jni",
+    "crates/tile-png-ffi",
     "crates/mvt-render-wasm",
     "crates/mvt-render-jni",
     "crates/mvt-render-ffi",

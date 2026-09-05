@@ -33,6 +33,19 @@ sync_android_core() {
     echo "android core -> $dest"
 }
 
+sync_ios_core() {
+    # The PNG encoder, which lives in the SDK core rather than the vector tile
+    # module: MarkerTileRenderer needs it, and core cannot depend on a module
+    # that depends on core.
+    local dest="$sdks/ios-sdk/ios-sdk-core"
+    [[ -d "$dest" ]] || { echo "skip ios core: $dest not found"; return; }
+    rm -rf "$dest/TilePng.xcframework"
+    cp -R "$root/bindings/ios-core/TilePng.xcframework" "$dest/"
+    mkdir -p "$dest/Sources/CTilePng/include"
+    cp "$root/bindings/ios-core/include/tile_png.h" "$dest/Sources/CTilePng/include/"
+    echo "ios core -> $dest"
+}
+
 sync_ios() {
     local dest="$sdks/ios-sdk/ios-vectortile"
     [[ -d "$dest" ]] || { echo "skip ios: $dest not found"; return; }
@@ -67,5 +80,6 @@ sync_web() {
 
 sync_android
 sync_android_core
+sync_ios_core
 sync_ios
 sync_web
