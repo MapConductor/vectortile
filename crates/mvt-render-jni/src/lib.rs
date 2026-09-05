@@ -425,6 +425,7 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
     })
 }
 
+#[cfg(feature = "glbench-compat")]
 #[no_mangle]
 pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeNew(
     env: JNIEnv,
@@ -463,57 +464,6 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeRen
     )
 }
 
-#[cfg(feature = "tessellate")]
-/// Encodes a straight-alpha RGBA8 direct buffer as PNG.
-///
-/// Takes a *direct* `ByteBuffer` on purpose: the GPU path's `glReadPixels`
-/// already lands in one, so the pixels cross into Rust without a copy —
-/// `GetDirectBufferAddress` hands over the pointer. A `byte[]` variant would
-/// add a full-frame copy for nothing.
-#[no_mangle]
-pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeEncodePng(
-    mut env: JNIEnv,
-    _class: JClass,
-    buffer: JByteBuffer,
-    width: jint,
-    height: jint,
-) -> jbyteArray {
-    guarded(&mut env, std::ptr::null_mut(), |env| {
-        let (Ok(address), Ok(capacity)) = (
-            env.get_direct_buffer_address(&buffer),
-            env.get_direct_buffer_capacity(&buffer),
-        ) else {
-            throw(env, ILLEGAL_ARGUMENT, "buffer must be a direct ByteBuffer");
-            return std::ptr::null_mut();
-        };
-        let needed = width as usize * height as usize * 4;
-        if capacity < needed {
-            throw(env, ILLEGAL_ARGUMENT, "buffer smaller than width*height*4");
-            return std::ptr::null_mut();
-        }
-        // Safety: address/capacity come from the live direct buffer above, and
-        // the caller keeps it alive across this synchronous call.
-        let rgba = unsafe { std::slice::from_raw_parts(address, needed) };
-
-        match mvt_render::encode::encode_png_rgba(width as u32, height as u32, rgba) {
-            Ok(png) => match env.byte_array_from_slice(&png) {
-                Ok(array) => array.into_raw(),
-                Err(error) => {
-                    throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
-                    std::ptr::null_mut()
-                }
-            },
-            Err(error) => {
-                throw(env, RUNTIME_EXCEPTION, &error.to_string());
-                std::ptr::null_mut()
-            }
-        }
-    })
-}
-
-// The OpenGL ES experiment declares these on its own Kotlin class, so the
-// symbol names differ from the SDK module's. They delegate rather than
-// duplicate.
 #[cfg(feature = "glbench-compat")]
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
@@ -533,16 +483,3 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
     )
 }
 
-#[cfg(feature = "glbench-compat")]
-#[no_mangle]
-pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeEncodePng(
-    env: JNIEnv,
-    class: JClass,
-    buffer: JByteBuffer,
-    width: jint,
-    height: jint,
-) -> jbyteArray {
-    Java_com_mapconductor_vectortile_NativeRenderer_nativeEncodePng(
-        env, class, buffer, width, height,
-    )
-}

@@ -27,7 +27,6 @@
 //! reports what a given style loses.
 
 pub mod color;
-pub mod encode;
 pub mod expr;
 pub mod filter;
 pub mod mercator;

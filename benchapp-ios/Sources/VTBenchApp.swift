@@ -129,6 +129,64 @@ struct ContentView: View {
                         let (percent, worst) = blockDifference(a, b, size: 512)
                         log(String(format: "gpu vs cpu blocks %.2f%% worst %d", percent, worst))
                     }
+                    // Both encoders on the GPU path's own pixels. Unlike a
+                    // marker tile there is no UIImage here — Metal hands back
+                    // raw RGBA — so the platform encoder has to be given one,
+                    // and that construction is part of its cost.
+                    let side = 512
+                    var readback = [UInt8](repeating: 0, count: side * side * 4)
+                    if let source = UIImage(data: gpuPng)?.cgImage {
+                        readback.withUnsafeMutableBytes { raw in
+                            CGContext(
+                                data: raw.baseAddress, width: side, height: side,
+                                bitsPerComponent: 8, bytesPerRow: side * 4,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                            )?.draw(source, in: CGRect(x: 0, y: 0, width: side, height: side))
+                        }
+
+                        func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
+
+                        var platformBytes = 0
+                        let platform = median((0..<5).map { _ in
+                            var scratch = readback
+                            let started = CFAbsoluteTimeGetCurrent()
+                            let data: Data? = scratch.withUnsafeMutableBytes { raw -> Data? in
+                                guard let context = CGContext(
+                                    data: raw.baseAddress, width: side, height: side,
+                                    bitsPerComponent: 8, bytesPerRow: side * 4,
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                                ), let made = context.makeImage() else { return nil }
+                                return UIImage(cgImage: made).pngData()
+                            }
+                            let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                            platformBytes = data?.count ?? 0
+                            return elapsed
+                        })
+
+                        var rustBytes = 0
+                        let rust = median((0..<5).map { _ in
+                            var scratch = readback
+                            var outPointer: UnsafeMutablePointer<UInt8>?
+                            var outLength = 0
+                            let started = CFAbsoluteTimeGetCurrent()
+                            _ = scratch.withUnsafeMutableBufferPointer { buffer in
+                                tile_png_encode(buffer.baseAddress, UInt32(side), UInt32(side), 1,
+                                                &outPointer, &outLength)
+                            }
+                            let elapsed = (CFAbsoluteTimeGetCurrent() - started) * 1000
+                            rustBytes = outLength
+                            if let outPointer { tile_png_buffer_free(outPointer, outLength) }
+                            return elapsed
+                        })
+
+                        log(String(
+                            format: "gpu png platform=%.1fms/%dB rust=%.1fms/%dB",
+                            platform, platformBytes, rust, rustBytes
+                        ))
+                    }
+
                     try gpuPng.write(
                         to: FileManager.default
                             .urls(for: .documentDirectory, in: .userDomainMask)[0]

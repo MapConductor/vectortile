@@ -20,9 +20,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 /// mutates the caller's memory — the caller must not reuse it afterwards.
 ///
 /// # Safety
-/// Called only by the JVM through the `NativePngEncoder` declaration.
+/// Called only by the JVM through the `TilePngEncoder` declaration.
 #[no_mangle]
-pub extern "system" fn Java_com_mapconductor_core_marker_NativePngEncoder_nativeEncode(
+pub extern "system" fn Java_com_mapconductor_core_tileserver_TilePngEncoder_nativeEncode(
     mut env: JNIEnv,
     _class: JClass,
     buffer: JByteBuffer,

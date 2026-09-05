@@ -397,55 +397,6 @@ pub unsafe extern "C" fn mvt_renderer_tessellate(
     }
 }
 
-/// Encodes straight-alpha RGBA pixels as PNG.
-///
-/// Exists because the platform encoders are slow enough to dominate a GPU tile:
-/// on device this is ~7 ms where `UIImage`/`Bitmap.compress` take ~48 ms.
-///
-/// # Safety
-/// `rgba` must be valid for `width * height * 4` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn mvt_encode_png(
-    rgba: *const u8,
-    width: u32,
-    height: u32,
-    out_ptr: *mut *mut u8,
-    out_len: *mut usize,
-) -> c_int {
-    if out_ptr.is_null() || out_len.is_null() {
-        return MVT_ERR_BAD_ARGUMENT;
-    }
-    *out_ptr = ptr::null_mut();
-    *out_len = 0;
-
-    let expected = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|pixels| pixels.checked_mul(4));
-    let Some(expected) = expected else {
-        return MVT_ERR_BAD_ARGUMENT;
-    };
-    if rgba.is_null() || expected == 0 {
-        return MVT_ERR_BAD_ARGUMENT;
-    }
-
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let pixels = std::slice::from_raw_parts(rgba, expected);
-        mvt_render::encode::encode_png_rgba(width, height, pixels)
-            .map_err(|_| MVT_ERR_RENDER_FAILED)
-    }));
-
-    match result {
-        Ok(Ok(png)) => {
-            let mut boxed = png.into_boxed_slice();
-            *out_len = boxed.len();
-            *out_ptr = boxed.as_mut_ptr();
-            std::mem::forget(boxed);
-            MVT_OK
-        }
-        Ok(Err(code)) => code,
-        Err(_) => MVT_ERR_PANIC,
-    }
-}
 
 /// Releases a float buffer returned by [`mvt_renderer_tessellate`].
 ///
