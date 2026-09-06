@@ -11,12 +11,12 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use jni::objects::{JByteArray, JClass, JIntArray, JString};
 #[cfg(feature = "tessellate")]
 use jni::objects::JByteBuffer;
-use jni::sys::{jbyteArray, jint, jlong, jstring};
+use jni::objects::{JByteArray, JClass, JIntArray, JString};
 #[cfg(feature = "tessellate")]
 use jni::sys::jfloatArray;
+use jni::sys::{jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
 use mvt_render::Renderer;
 
@@ -298,6 +298,237 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeDia
 /// Layer `type` values in the current style that will not be drawn, as a JSON
 /// array of strings.
 #[no_mangle]
+/// The style's `glyphs` URL template, or an empty string when it has none.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeGlyphsUrlTemplate(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jstring {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        match env.new_string(renderer.glyphs_url_template().unwrap_or("")) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+#[no_mangle]
+/// The `{fontstack}/{range}.pbf` files this tile's labels need and the
+/// renderer does not have, as a JSON array of already-filled URLs.
+///
+/// URLs rather than parts: the host has nothing to do with the pair except
+/// fetch it, and building the string here keeps one copy of the substitution
+/// rules instead of one per platform.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNeededGlyphs(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+) -> jstring {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        let Some(template) = renderer.glyphs_url_template().map(str::to_owned) else {
+            return empty_json_array(env);
+        };
+
+        let data_bytes = match env.convert_byte_array(&data) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad tile data: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let count = match env.get_array_length(&lengths) {
+            Ok(value) => value as usize,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let mut length_table = vec![0i32; count];
+        if let Err(error) = env.get_int_array_region(&lengths, 0, &mut length_table) {
+            throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+            return std::ptr::null_mut();
+        }
+
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(count);
+        let mut offset = 0usize;
+        for length in &length_table {
+            if *length <= 0 {
+                slices.push(None);
+                continue;
+            }
+            let length = *length as usize;
+            if offset + length > data_bytes.len() {
+                slices.push(None);
+                continue;
+            }
+            slices.push(Some(&data_bytes[offset..offset + length]));
+            offset += length;
+        }
+
+        let urls: Vec<String> = renderer
+            .needed_glyphs(z as u8, x as u32, y as u32, &slices)
+            .iter()
+            .map(|request| json_string(&request.url(&template)))
+            .collect();
+        match env.new_string(format!("[{}]", urls.join(","))) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+#[no_mangle]
+/// Hands one fetched glyph range to the renderer, which keeps it for every
+/// later tile. Returns how many glyphs it gained.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeAddGlyphs(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    pbf: JByteArray,
+) -> jint {
+    guarded(&mut env, 0, |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return 0;
+        };
+        let bytes = match env.convert_byte_array(&pbf) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad glyph data: {error}"));
+                return 0;
+            }
+        };
+        match renderer.add_glyphs(&bytes) {
+            Ok(added) => added as jint,
+            Err(error) => {
+                // A bad range is not fatal: the label simply misses those
+                // characters, and the rest of the tile is unaffected.
+                throw(env, ILLEGAL_ARGUMENT, &format!("{error}"));
+                0
+            }
+        }
+    })
+}
+
+#[no_mangle]
+/// Draws this tile's labels onto an RGBA buffer the GPU produced, in place.
+///
+/// Returns how many labels were placed, or 0 when there is nothing to draw.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeDrawLabels(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    tile_size: jint,
+    rgba: JByteArray,
+    data: JByteArray,
+    lengths: JIntArray,
+) -> jint {
+    guarded(&mut env, 0, |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return 0;
+        };
+
+        let mut pixels = match env.convert_byte_array(&rgba) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad rgba buffer: {error}"));
+                return 0;
+            }
+        };
+        let data_bytes = match env.convert_byte_array(&data) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad tile data: {error}"));
+                return 0;
+            }
+        };
+        let count = match env.get_array_length(&lengths) {
+            Ok(value) => value as usize,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+                return 0;
+            }
+        };
+        let mut length_table = vec![0i32; count];
+        if let Err(error) = env.get_int_array_region(&lengths, 0, &mut length_table) {
+            throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+            return 0;
+        }
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(count);
+        let mut offset = 0usize;
+        for length in &length_table {
+            if *length <= 0 {
+                slices.push(None);
+                continue;
+            }
+            let length = *length as usize;
+            if offset + length > data_bytes.len() {
+                slices.push(None);
+                continue;
+            }
+            slices.push(Some(&data_bytes[offset..offset + length]));
+            offset += length;
+        }
+
+        let placed = match renderer.draw_labels_onto(
+            z as u8,
+            x as u32,
+            y as u32,
+            tile_size as u32,
+            &mut pixels,
+            &slices,
+        ) {
+            Ok(count) => count,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("{error}"));
+                return 0;
+            }
+        };
+        if placed > 0 {
+            // Written back only when something changed: the copy is the whole
+            // buffer, and most tiles at most zooms carry no label at all.
+            if let Err(error) = env.set_byte_array_region(&rgba, 0, unsafe {
+                std::slice::from_raw_parts(pixels.as_ptr() as *const i8, pixels.len())
+            }) {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                return 0;
+            }
+        }
+        placed as jint
+    })
+}
+
+fn empty_json_array(env: &mut JNIEnv) -> jstring {
+    match env.new_string("[]") {
+        Ok(value) => value.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeUnsupportedLayerTypes(
     mut env: JNIEnv,
     _class: JClass,
@@ -386,7 +617,11 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
             }
             let end = offset + *length as usize;
             if end > data_bytes.len() {
-                throw(env, ILLEGAL_ARGUMENT, "length table overruns the data buffer");
+                throw(
+                    env,
+                    ILLEGAL_ARGUMENT,
+                    "length table overruns the data buffer",
+                );
                 return std::ptr::null_mut();
             }
             slices.push(Some(&data_bytes[offset..end]));
@@ -482,4 +717,3 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
         env, class, handle, z, x, y, tile_size, data, lengths,
     )
 }
-

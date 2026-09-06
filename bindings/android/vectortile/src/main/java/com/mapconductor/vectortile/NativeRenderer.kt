@@ -17,10 +17,18 @@ internal object NativeRenderer {
 
     external fun nativeFree(handle: Long)
 
-    external fun nativeSetStyle(handle: Long, styleJson: String)
+    external fun nativeSetStyle(
+        handle: Long,
+        styleJson: String,
+    )
 
     /** JSON array of `{ sourceId, url, z, x, y, scale, offsetX, offsetY }`. */
-    external fun nativePlan(handle: Long, z: Int, x: Int, y: Int): String
+    external fun nativePlan(
+        handle: Long,
+        z: Int,
+        x: Int,
+        y: Int,
+    ): String
 
     /**
      * @param data every fetched source tile concatenated in plan order
@@ -35,6 +43,46 @@ internal object NativeRenderer {
         data: ByteArray,
         lengths: IntArray,
     ): ByteArray
+
+    /** The style's `glyphs` URL template, or empty when it has none. */
+    external fun nativeGlyphsUrlTemplate(handle: Long): String
+
+    /**
+     * JSON array of glyph URLs this tile's labels need and the renderer does
+     * not have.
+     *
+     * Answered from the tile rather than the style: ranges follow the text, and
+     * a CJK font has 82 of them where a tile of Tokyo uses four.
+     */
+    external fun nativeNeededGlyphs(
+        handle: Long,
+        z: Int,
+        x: Int,
+        y: Int,
+        data: ByteArray,
+        lengths: IntArray,
+    ): String
+
+    /** Hands over one fetched range; returns how many glyphs it added. */
+    external fun nativeAddGlyphs(
+        handle: Long,
+        pbf: ByteArray,
+    ): Int
+
+    /**
+     * Draws this tile's labels onto an RGBA buffer, in place. Returns how many
+     * were placed.
+     */
+    external fun nativeDrawLabels(
+        handle: Long,
+        z: Int,
+        x: Int,
+        y: Int,
+        tileSize: Int,
+        rgba: ByteArray,
+        data: ByteArray,
+        lengths: IntArray,
+    ): Int
 
     /** JSON array of layer `type` values the renderer will not draw. */
     external fun nativeUnsupportedLayerTypes(handle: Long): String
@@ -55,7 +103,6 @@ internal object NativeRenderer {
         data: ByteArray,
         lengths: IntArray,
     ): FloatArray
-
 }
 
 /**
@@ -80,7 +127,9 @@ internal object NativeRenderer {
  * and one colour per draw call disagreed with the CPU renderer on 37% of a
  * tile.
  */
-internal class TessellatedTile(packed: FloatArray) {
+internal class TessellatedTile(
+    packed: FloatArray,
+) {
     val extent: Float = packed[0]
     val background: FloatArray? =
         if (packed[1] != 0f) floatArrayOf(packed[2], packed[3], packed[4], packed[5]) else null
@@ -94,14 +143,16 @@ internal class TessellatedTile(packed: FloatArray) {
     init {
         val batchCount = packed[6].toInt()
         var cursor = 13
-        batches = (0 until batchCount).map {
-            val batch = SolidBatchRenderer.Batch(
-                vertexOffset = packed[cursor].toInt(),
-                vertexCount = packed[cursor + 1].toInt(),
-            )
-            cursor += 2
-            batch
-        }
+        batches =
+            (0 until batchCount).map {
+                val batch =
+                    SolidBatchRenderer.Batch(
+                        vertexOffset = packed[cursor].toInt(),
+                        vertexCount = packed[cursor + 1].toInt(),
+                    )
+                cursor += 2
+                batch
+            }
         vertices = packed.copyOfRange(cursor, packed.size)
     }
 

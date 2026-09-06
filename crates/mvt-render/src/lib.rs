@@ -101,7 +101,13 @@ pub struct Renderer {
     /// characters, so this fills quickly and then stops costing anything. It
     /// lives on the renderer rather than beside it because a restyle keeps the
     /// glyphs — a colour change does not alter what a label says.
-    glyphs: text::GlyphStore,
+    ///
+    /// Behind a lock because the hosts render tiles on a pool: several threads
+    /// read it while one adds a range. Without it the Android build crashed
+    /// inside `add_glyphs` the moment more than one tile wanted glyphs at
+    /// once. Reads are the common case by far, so a read/write lock rather
+    /// than a mutex.
+    glyphs: std::sync::RwLock<text::GlyphStore>,
 }
 
 /// One `{fontstack}/{range}.pbf` the renderer needs and does not have.
@@ -127,14 +133,14 @@ impl Renderer {
     pub fn new(style_json: &str) -> Result<Renderer, RenderError> {
         Ok(Renderer {
             style: Style::parse(style_json)?,
-            glyphs: text::GlyphStore::new(),
+            glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
         })
     }
 
     pub fn from_style(style: Style) -> Renderer {
         Renderer {
             style,
-            glyphs: text::GlyphStore::new(),
+            glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
         }
     }
 
@@ -144,18 +150,26 @@ impl Renderer {
     }
 
     /// Takes one fetched `.pbf` and keeps its glyphs.
-    pub fn add_glyphs(&mut self, pbf: &[u8]) -> Result<usize, RenderError> {
+    ///
+    /// `&self` rather than `&mut self`: the hosts hold one renderer behind a
+    /// raw handle and call it from a thread pool, so exclusivity has to be
+    /// real rather than promised by a signature.
+    pub fn add_glyphs(&self, pbf: &[u8]) -> Result<usize, RenderError> {
         let stacks = glyphs::decode(pbf).map_err(|e| RenderError::Decode(e.to_string()))?;
+        let mut store = self
+            .glyphs
+            .write()
+            .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
         let mut added = 0;
         for stack in stacks {
             added += stack.glyphs.len();
-            self.glyphs.insert(stack);
+            store.insert(stack);
         }
         Ok(added)
     }
 
     pub fn has_glyphs(&self) -> bool {
-        !self.glyphs.is_empty()
+        self.glyphs.read().map(|s| !s.is_empty()).unwrap_or(false)
     }
 
     /// What this tile's labels need and the renderer does not have.
@@ -172,7 +186,10 @@ impl Renderer {
     ) -> Vec<GlyphRequest> {
         let plan = self.plan(z, x, y);
         let decoded = self.decode_plan(&plan, tile_data);
-        symbol::needed_glyphs(&self.style, z as f64, &decoded, &self.glyphs)
+        let Ok(store) = self.glyphs.read() else {
+            return Vec::new();
+        };
+        symbol::needed_glyphs(&self.style, z as f64, &decoded, &store)
     }
 
     pub fn style(&self) -> &Style {
@@ -358,8 +375,73 @@ impl Renderer {
         let plan = self.plan(z, x, y);
         let decoded = self.decode_plan(&plan, tile_data);
 
-        raster::render_with_glyphs(&self.style, z as f64, tile_size, &decoded, &self.glyphs)
+        let store = self
+            .glyphs
+            .read()
+            .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
+        raster::render_with_glyphs(&self.style, z as f64, tile_size, &decoded, &store)
             .ok_or(RenderError::BadTileSize(tile_size))
+    }
+
+    /// Draws this tile's labels onto an RGBA buffer someone else rasterised.
+    ///
+    /// The GPU path tessellates fills and lines and knows nothing about
+    /// glyphs, so without this a style with labels either loses them or gives
+    /// up the GPU. The label pass does not care how the pixels underneath were
+    /// made — it composites onto them — so it runs over the readback.
+    ///
+    /// `rgba` is `tile_size * tile_size * 4` bytes and is modified in place.
+    pub fn draw_labels_onto(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        rgba: &mut [u8],
+        tile_data: &[Option<&[u8]>],
+    ) -> Result<usize, RenderError> {
+        let expected = (tile_size as usize) * (tile_size as usize) * 4;
+        if rgba.len() != expected {
+            return Err(RenderError::Decode(format!(
+                "rgba buffer is {} bytes, expected {expected}",
+                rgba.len()
+            )));
+        }
+        let store = self
+            .glyphs
+            .read()
+            .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
+        if store.is_empty() {
+            return Ok(0);
+        }
+
+        let plan = self.plan(z, x, y);
+        let decoded = self.decode_plan(&plan, tile_data);
+        let paint_scale = tile_size as f32 / 512.0;
+        let labels = symbol::collect(
+            &self.style,
+            z as f64,
+            tile_size,
+            paint_scale,
+            &decoded,
+            &store,
+        );
+        let placed = symbol::place(labels, 2.0 * paint_scale);
+        if placed.is_empty() {
+            return Ok(0);
+        }
+
+        let Some(mut pixmap) = tiny_skia::Pixmap::new(tile_size, tile_size) else {
+            return Err(RenderError::BadTileSize(tile_size));
+        };
+        // Copied in and out rather than wrapped: `Pixmap::from_vec` demands
+        // premultiplied data and rejects anything else, and a readback whose
+        // alpha is saturated is both at once. Copying sidesteps having to
+        // prove that at the type level for a buffer that came from GL.
+        pixmap.data_mut().copy_from_slice(rgba);
+        symbol::draw(&mut pixmap, &placed, &store);
+        rgba.copy_from_slice(pixmap.data());
+        Ok(placed.len())
     }
 
     /// Decodes whatever arrived for a plan, in the plan's own order.
@@ -776,6 +858,117 @@ mod tests {
         let mut out = Vec::new();
         bytes(&mut out, 1, &stack_msg);
         out
+    }
+
+    /// The hosts render on a thread pool and add glyph ranges from whichever
+    /// thread finished fetching. The first Android build crashed inside
+    /// `add_glyphs` the moment two tiles wanted glyphs at once — a signature
+    /// taking `&mut self` promised exclusivity that a raw handle cannot give.
+    #[test]
+    fn survives_concurrent_readers_and_a_writer() {
+        use std::sync::Arc;
+
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "glyphs": "https://example.com/{fontstack}/{range}.pbf",
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [{
+                "id": "labels", "type": "symbol", "source": "src", "source-layer": "place",
+                "layout": { "text-field": "{name}", "text-font": ["F"], "text-size": 20 },
+                "paint": { "text-color": "#000000" }
+            }]
+        }))
+        .unwrap();
+        let renderer = Arc::new(Renderer::from_style(style));
+        let tile = Arc::new(fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "place".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Point,
+                points: vec![(2048, 2048)],
+                props: vec![("name".into(), "AB".into())],
+            }],
+        }]));
+
+        let mut threads = Vec::new();
+        for t in 0..8 {
+            let renderer = Arc::clone(&renderer);
+            let tile = Arc::clone(&tile);
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..20 {
+                    if t % 2 == 0 {
+                        renderer.add_glyphs(&glyph_pbf("F", &[0x41, 0x42])).unwrap();
+                    } else {
+                        renderer
+                            .render_pixmap(10, 512, 300, 256, &[Some(&tile)])
+                            .expect("renders");
+                    }
+                }
+            }));
+        }
+        for t in threads {
+            t.join().expect("no thread panicked");
+        }
+        assert!(renderer.has_glyphs());
+    }
+
+    /// The GPU path hands back pixels it drew without glyphs; the label pass
+    /// has to composite onto them rather than replace them. Until this
+    /// existed, a style with labels rendered on the GPU lost every one of them
+    /// and reported nothing.
+    #[test]
+    fn draws_labels_over_pixels_someone_else_rasterised() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "glyphs": "https://example.com/{fontstack}/{range}.pbf",
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [{
+                "id": "labels", "type": "symbol", "source": "src", "source-layer": "place",
+                "layout": { "text-field": "{name}", "text-font": ["F"], "text-size": 40 },
+                "paint": { "text-color": "#000000" }
+            }]
+        }))
+        .unwrap();
+        let renderer = Renderer::from_style(style);
+        renderer.add_glyphs(&glyph_pbf("F", &[0x41])).unwrap();
+
+        let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "place".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Point,
+                points: vec![(2048, 2048)],
+                props: vec![("name".into(), "A".into())],
+            }],
+        }]);
+
+        // A field of opaque red, as the GPU would leave it.
+        let size = 128u32;
+        let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+        for _ in 0..(size * size) {
+            rgba.extend_from_slice(&[255, 0, 0, 255]);
+        }
+        let placed = renderer
+            .draw_labels_onto(10, 512, 300, size, &mut rgba, &[Some(&tile)])
+            .expect("draws");
+        assert_eq!(placed, 1);
+
+        let centre = ((size / 2 * size + size / 2) * 4) as usize;
+        assert!(rgba[centre] < 128, "the label darkened the middle");
+        assert_eq!(
+            &rgba[0..4],
+            &[255, 0, 0, 255],
+            "the corner is untouched red"
+        );
+    }
+
+    #[test]
+    fn refuses_an_rgba_buffer_of_the_wrong_size() {
+        let renderer = Renderer::from_style(test_style());
+        let mut rgba = vec![0u8; 10];
+        assert!(renderer
+            .draw_labels_onto(10, 512, 300, 256, &mut rgba, &[])
+            .is_err());
     }
 
     #[test]

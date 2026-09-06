@@ -223,7 +223,6 @@ name = "mvt-render"
 version = "0.1.0"
 dependencies = [
  "earcutr",
- "png",
  "serde",
  "serde_json",
  "tiny-skia",
@@ -410,6 +409,29 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tile-png"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "tiny-skia",
+]
+
+[[package]]
+name = "tile-png-ffi"
+version = "0.1.0"
+dependencies = [
+ "tile-png",
+]
+
+[[package]]
+name = "tile-png-jni"
+version = "0.1.0"
+dependencies = [
+ "jni",
+ "tile-png",
 ]
 
 [[package]]

@@ -1,6 +1,7 @@
 package com.mapconductor.vectortile
 
 import java.io.Closeable
+import org.json.JSONArray
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -13,17 +14,30 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Instances hold a native allocation; call [close] when done.
  */
-class VectorTileRenderer private constructor(handle: Long) : Closeable {
-
+class VectorTileRenderer private constructor(
+    handle: Long,
+) : Closeable {
     private val handle = AtomicLong(handle)
 
     companion object {
         const val DEFAULT_TILE_SIZE: Int = 512
 
+        /**
+         * Bumped whenever the renderer's output changes for the same style.
+         *
+         * Callers key their tile caches on this. Without it, a build that
+         * started drawing labels kept serving the unlabelled PNGs the previous
+         * one had cached — the tiles were correct for the renderer that made
+         * them and wrong for the one asking.
+         *
+         * 1: fills, lines, circles.
+         * 2: labels.
+         */
+        const val OUTPUT_VERSION: Int = 2
+
         /** @throws IllegalArgumentException if the style cannot be parsed. */
         @JvmStatic
-        fun create(styleJson: String): VectorTileRenderer =
-            VectorTileRenderer(NativeRenderer.nativeNew(styleJson))
+        fun create(styleJson: String): VectorTileRenderer = VectorTileRenderer(NativeRenderer.nativeNew(styleJson))
     }
 
     private fun requireHandle(): Long {
@@ -36,7 +50,11 @@ class VectorTileRenderer private constructor(handle: Long) : Closeable {
      * Source tiles needed to draw `z/x/y`, as JSON. Fetch them in order and
      * pass the bytes to [render] positionally.
      */
-    fun plan(z: Int, x: Int, y: Int): String = NativeRenderer.nativePlan(requireHandle(), z, x, y)
+    fun plan(
+        z: Int,
+        x: Int,
+        y: Int,
+    ): String = NativeRenderer.nativePlan(requireHandle(), z, x, y)
 
     /**
      * Rasterises `z/x/y` to PNG bytes.
@@ -44,6 +62,56 @@ class VectorTileRenderer private constructor(handle: Long) : Closeable {
      * @param tiles one entry per [plan] request, in the same order; null where
      *   the fetch 404'd or came back empty.
      */
+    /** The style's `glyphs` URL template, or null when it has none. */
+    fun glyphsUrlTemplate(): String? =
+        NativeRenderer.nativeGlyphsUrlTemplate(requireHandle()).takeIf { it.isNotEmpty() }
+
+    /**
+     * Glyph URLs this tile's labels need and the renderer does not hold.
+     *
+     * Asked after the source tiles are in, because which ranges a tile needs
+     * depends on the text in it — a CJK font has 82 ranges where a tile of
+     * Tokyo uses four.
+     */
+    fun neededGlyphs(
+        z: Int,
+        x: Int,
+        y: Int,
+        tiles: List<ByteArray?>,
+    ): List<String> {
+        val (data, lengths) = pack(tiles)
+        val urls = JSONArray(NativeRenderer.nativeNeededGlyphs(requireHandle(), z, x, y, data, lengths))
+        return (0 until urls.length()).map { urls.getString(it) }
+    }
+
+    /**
+     * Hands one fetched range to the renderer, which keeps it for every later
+     * tile. Returns how many glyphs it gained.
+     */
+    fun addGlyphs(pbf: ByteArray): Int = NativeRenderer.nativeAddGlyphs(requireHandle(), pbf)
+
+    /**
+     * Draws this tile's labels onto pixels something else rasterised.
+     *
+     * The GPU path tessellates fills and lines and knows nothing about glyphs.
+     * The label pass does not care how the pixels underneath were made, so it
+     * runs over the readback rather than forcing the whole tile onto the CPU.
+     *
+     * @param rgba `tileSize * tileSize * 4` bytes, modified in place
+     * @return how many labels were placed
+     */
+    fun drawLabels(
+        z: Int,
+        x: Int,
+        y: Int,
+        tileSize: Int,
+        rgba: ByteArray,
+        tiles: List<ByteArray?>,
+    ): Int {
+        val (data, lengths) = pack(tiles)
+        return NativeRenderer.nativeDrawLabels(requireHandle(), z, x, y, tileSize, rgba, data, lengths)
+    }
+
     fun render(
         z: Int,
         x: Int,
@@ -51,8 +119,16 @@ class VectorTileRenderer private constructor(handle: Long) : Closeable {
         tileSize: Int = DEFAULT_TILE_SIZE,
         tiles: List<ByteArray?>,
     ): ByteArray {
-        // The native side takes one concatenated buffer plus a length table,
-        // which avoids marshalling an array-of-arrays across JNI.
+        val (data, lengths) = pack(tiles)
+        return NativeRenderer.nativeRender(requireHandle(), z, x, y, tileSize, data, lengths)
+    }
+
+    /**
+     * One concatenated buffer plus a length table, which is what the native
+     * side takes: an array-of-arrays would be marshalled element by element
+     * across JNI.
+     */
+    private fun pack(tiles: List<ByteArray?>): Pair<ByteArray, IntArray> {
         val lengths = IntArray(tiles.size) { tiles[it]?.size ?: 0 }
         val data = ByteArray(lengths.sum())
         var offset = 0
@@ -61,7 +137,7 @@ class VectorTileRenderer private constructor(handle: Long) : Closeable {
             tile.copyInto(data, offset)
             offset += tile.size
         }
-        return NativeRenderer.nativeRender(requireHandle(), z, x, y, tileSize, data, lengths)
+        return data to lengths
     }
 
     /**
@@ -83,12 +159,10 @@ class VectorTileRenderer private constructor(handle: Long) : Closeable {
         tileSize: Int,
         data: ByteArray,
         lengths: IntArray,
-    ): FloatArray =
-        NativeRenderer.nativeTessellate(requireHandle(), z, x, y, tileSize, data, lengths)
+    ): FloatArray = NativeRenderer.nativeTessellate(requireHandle(), z, x, y, tileSize, data, lengths)
 
     /** JSON array of layer `type` values in this style that will not be drawn. */
-    fun unsupportedLayerTypes(): String =
-        NativeRenderer.nativeUnsupportedLayerTypes(requireHandle())
+    fun unsupportedLayerTypes(): String = NativeRenderer.nativeUnsupportedLayerTypes(requireHandle())
 
     /**
      * Reasons the current style may not render as intended, as a JSON array of
