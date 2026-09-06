@@ -152,6 +152,7 @@ pub fn render_with_glyphs(
             zoom,
             paint_scale,
             &mut patterns,
+            overzoom_window(decoded_tile, data_layer.extent),
         );
         if drawn > 0 {
             stats.layers_drawn += 1;
@@ -189,6 +190,23 @@ pub fn render_with_glyphs(
 
 /// Maps tile-local geometry units onto pixels of the target tile, accounting
 /// for the sub-rect an overzoomed ancestor tile stands in for.
+/// The part of an overzoomed parent this tile shows, in the parent's units,
+/// with an eighth of the window as margin. `None` when the tile is its own.
+pub(crate) fn overzoom_window(decoded: &DecodedTile, extent: u32) -> Option<[f32; 4]> {
+    if decoded.scale <= 1.0 {
+        return None;
+    }
+    let extent = extent as f32;
+    let span = extent / decoded.scale;
+    let margin = span / 8.0;
+    Some([
+        decoded.offset_x * extent - margin,
+        decoded.offset_y * extent - margin,
+        decoded.offset_x * extent + span + margin,
+        decoded.offset_y * extent + span + margin,
+    ])
+}
+
 fn tile_transform(decoded: &DecodedTile, extent: u32, tile_size: u32) -> Transform {
     let size = tile_size as f32;
     let k = size * decoded.scale / extent as f32;
@@ -224,6 +242,7 @@ fn draw_data_layer(
     zoom: f64,
     paint_scale: f32,
     patterns: &mut PatternCache<'_>,
+    window: Option<[f32; 4]>,
 ) -> usize {
     let mut drawn = 0;
 
@@ -236,6 +255,13 @@ fn draw_data_layer(
     }
 
     for feature in &data.features {
+        // An overzoomed tile draws a fraction of its parent, and most of the
+        // parent's features are nowhere near it.
+        if let Some(window) = window {
+            if !feature.touches_window(window) {
+                continue;
+            }
+        }
         if !filter.matches(data, feature) {
             continue;
         }

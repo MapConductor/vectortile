@@ -299,7 +299,7 @@ impl Renderer {
         tile_data: &[Option<&[u8]>],
     ) -> Vec<GlyphRequest> {
         let plan = self.plan(z, x, y);
-        let decoded = self.decode_plan(&plan, tile_data);
+        let decoded = self.decode_plan_labels(&plan, tile_data);
         let Ok(store) = self.glyphs.read() else {
             return Vec::new();
         };
@@ -469,7 +469,7 @@ impl Renderer {
             result.stats.filter_compile_ms,
             result.stats.fill_ms,
             result.stats.line_ms,
-            0.0,
+            result.stats.feature_loop_ms,
         ]);
         for batch in &result.batches {
             packed.extend_from_slice(&[batch.first_vertex as f32, batch.vertex_count as f32]);
@@ -523,7 +523,7 @@ impl Renderer {
     #[doc(hidden)]
     pub fn label_sizes(&self, z: u8, tile_size: u32, tile_data: &[Option<&[u8]>]) -> Vec<f32> {
         let plan = self.plan(z, 0, 0);
-        let decoded = self.decode_plan(&plan, tile_data);
+        let decoded = self.decode_plan_labels(&plan, tile_data);
         let decoded = &decoded[..];
         let Ok(store) = self.glyphs.read() else {
             return Vec::new();
@@ -585,7 +585,7 @@ impl Renderer {
             return Vec::new();
         };
         let plan = self.plan(z, x, y);
-        let decoded = self.decode_plan(&plan, tile_data);
+        let decoded = self.decode_plan_labels(&plan, tile_data);
         let paint_scale = tile_size as f32 / 512.0;
         let labels = symbol::collect(
             &self.style,
@@ -642,7 +642,7 @@ impl Renderer {
         }
 
         let plan = self.plan(z, x, y);
-        let decoded = self.decode_plan(&plan, tile_data);
+        let decoded = self.decode_plan_labels(&plan, tile_data);
         let paint_scale = tile_size as f32 / 512.0;
         let labels = symbol::collect(
             &self.style,
@@ -676,9 +676,31 @@ impl Renderer {
 
     /// Decodes whatever arrived for a plan, in the plan's own order.
     fn decode_plan(&self, plan: &TilePlan, tile_data: &[Option<&[u8]>]) -> Vec<DecodedTile> {
+        self.decode_plan_inner(plan, tile_data, false)
+    }
+
+    /// As [`Self::decode_plan`], but every tile is decoded for its symbol
+    /// layers alone.
+    ///
+    /// For passes that only place labels: a street-zoom tile is mostly road
+    /// geometry by weight, and a label pass that decodes all of it throws
+    /// nearly all of that work away. The GPU path pays this twice -- once to
+    /// tessellate and once to label -- and this is what stops the second
+    /// decode costing what the first did.
+    fn decode_plan_labels(&self, plan: &TilePlan, tile_data: &[Option<&[u8]>]) -> Vec<DecodedTile> {
+        self.decode_plan_inner(plan, tile_data, true)
+    }
+
+    fn decode_plan_inner(
+        &self,
+        plan: &TilePlan,
+        tile_data: &[Option<&[u8]>],
+        labels_only_everywhere: bool,
+    ) -> Vec<DecodedTile> {
         let mut decoded = Vec::with_capacity(plan.requests.len());
         // Worked out once: a neighbour is decoded for its labels alone.
-        let symbol_layers = if plan.requests.iter().any(|r| r.labels_only) {
+        let symbol_layers = if labels_only_everywhere || plan.requests.iter().any(|r| r.labels_only)
+        {
             self.style.symbol_source_layers(plan.zoom_hint())
         } else {
             Default::default()
@@ -693,7 +715,7 @@ impl Renderer {
             }
             // A corrupt tile from one source must not blank the whole tile;
             // skip it and draw whatever else arrived.
-            let tile = if request.labels_only {
+            let tile = if request.labels_only || labels_only_everywhere {
                 let key = (request.source_id.clone(), request.z, request.x, request.y);
                 match self.cached_label_tile(&key) {
                     Some(tile) => tile,

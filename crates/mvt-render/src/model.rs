@@ -58,18 +58,46 @@ pub struct Feature {
     /// Flat (name index, value index) pairs into the owning layer's tables.
     /// Private so the storage layout stays a decoder-side concern.
     props: Vec<u32>,
+    /// `[min_x, min_y, max_x, max_y]`, computed once at construction.
+    ///
+    /// Stored rather than derived on demand because the overzoom window test
+    /// runs for every feature under every style layer -- computing it there
+    /// re-scanned every vertex a hundred times per tile and cost more than
+    /// the filtering it was meant to save.
+    bbox: [f32; 4],
 }
 
 impl Feature {
+    /// Whether this feature's bounding box intersects `window`, in the tile's
+    /// own units.
+    ///
+    /// A bounding box, not a vertex test, because a polygon can surround the
+    /// window with every vertex outside it -- a lake under a street-zoom tile
+    /// -- and a box can never wrongly drop what a precise test would keep.
+    pub fn touches_window(&self, window: [f32; 4]) -> bool {
+        self.bbox[0] <= window[2]
+            && self.bbox[2] >= window[0]
+            && self.bbox[1] <= window[3]
+            && self.bbox[3] >= window[1]
+    }
+
     /// Builds a feature. `props` is flat (name index, value index) pairs into
     /// the tables the owning [`Layer`] is constructed with.
     pub fn new(id: Option<u64>, geom_type: GeomType, parts: Parts, props: Vec<u32>) -> Feature {
         debug_assert!(props.len() % 2 == 0, "props must be index pairs");
+        let mut bbox = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        for p in parts.iter().flatten() {
+            bbox[0] = bbox[0].min(p[0]);
+            bbox[1] = bbox[1].min(p[1]);
+            bbox[2] = bbox[2].max(p[0]);
+            bbox[3] = bbox[3].max(p[1]);
+        }
         Feature {
             id,
             geom_type,
             parts,
             props,
+            bbox,
         }
     }
 

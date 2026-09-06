@@ -183,7 +183,14 @@ pub fn needed_glyphs(
                 continue;
             }
 
+            let window = crate::raster::overzoom_window(decoded_tile, data_layer.extent);
             for feature in &data_layer.features {
+                // Most of an overzoomed parent is nowhere near this tile.
+                if let Some(window) = window {
+                    if !feature.touches_window(window) {
+                        continue;
+                    }
+                }
                 if !filter.matches(data_layer, feature) {
                     continue;
                 }
@@ -298,7 +305,14 @@ pub fn collect(
                 continue;
             }
 
+            let window = crate::raster::overzoom_window(decoded_tile, data_layer.extent);
             for feature in &data_layer.features {
+                // Most of an overzoomed parent is nowhere near this tile.
+                if let Some(window) = window {
+                    if !feature.touches_window(window) {
+                        continue;
+                    }
+                }
                 if !filter.matches(data_layer, feature) {
                     continue;
                 }

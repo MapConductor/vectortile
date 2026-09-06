@@ -54,6 +54,15 @@ pub struct TessellationStats {
     pub fill_ms: f32,
     /// Time in line expansion, in ms.
     pub line_ms: f32,
+    /// Time in the per-feature loop, in ms, including the triangulation the
+    /// two clocks above already count. What is left over is deciding which
+    /// features belong, working out their paint, and writing the vertices.
+    pub feature_loop_ms: f32,
+    /// Features looked at, and features drawn. A style draws one source layer
+    /// through a dozen style layers, so every feature is asked a dozen times
+    /// whether it belongs -- which is invisible unless it is counted.
+    pub features_considered: usize,
+    pub features_drawn: usize,
 }
 
 /// Floats per vertex: x, y, r, g, b, a.
@@ -100,6 +109,13 @@ pub fn tessellate(
 ) -> Tessellation {
     let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
     let mut out = Tessellation::default();
+    // Which features of each data layer fall inside the overzoom window,
+    // worked out once per data layer rather than once per style layer. A
+    // style reads one source layer through dozens of its own layers, and
+    // walking twelve thousand features dozens of times -- even to skip them
+    // -- was a quarter of a second per street-zoom tile on a phone.
+    let mut in_window: std::collections::HashMap<usize, std::rc::Rc<Vec<u32>>> =
+        std::collections::HashMap::new();
 
     for layer in &style.layers {
         if !layer.kind.is_drawable() || !layer.is_visible() || !layer.applies_at(zoom) {
@@ -135,6 +151,27 @@ pub fn tessellate(
             out.extent = data.extent;
         }
         let unify = out.extent as f32 / data.extent as f32;
+
+        // The window this overzoomed tile actually shows, in the parent
+        // tile's own units. A z16 tile drawn from a z14 parent covers one
+        // sixteenth of it, but every one of the sixteen used to walk all
+        // twelve thousand features through every layer's filter -- most of
+        // the cost of a street-zoom tile, spent on features that could not
+        // possibly appear. The margin is generous (an eighth of the window)
+        // so a wide road casing or a label anchor just outside still draws.
+        let window = if tile.scale > 1.0 {
+            let extent = data.extent as f32;
+            let span = extent / tile.scale;
+            let margin = span / 8.0;
+            Some([
+                tile.offset_x * extent - margin,
+                tile.offset_y * extent - margin,
+                tile.offset_x * extent + span + margin,
+                tile.offset_y * extent + span + margin,
+            ])
+        } else {
+            None
+        };
 
         let start_len = out.vertices.len();
 
@@ -175,10 +212,25 @@ pub fn tessellate(
             None
         };
 
-        for feature in &data.features {
+        let loop_started = std::time::Instant::now();
+        let candidates = in_window
+            .entry(data as *const model::Layer as usize)
+            .or_insert_with(|| {
+                std::rc::Rc::new(match window {
+                    Some(window) => (0..data.features.len() as u32)
+                        .filter(|&i| data.features[i as usize].touches_window(window))
+                        .collect(),
+                    None => (0..data.features.len() as u32).collect(),
+                })
+            })
+            .clone();
+        out.stats.features_considered += candidates.len();
+        for &index in candidates.iter() {
+            let feature = &data.features[index as usize];
             if !filter.matches(data, feature) {
                 continue;
             }
+            out.stats.features_drawn += 1;
             if layer.kind == LayerKind::Fill && feature.geom_type != GeomType::Polygon {
                 continue;
             }
@@ -283,6 +335,8 @@ pub fn tessellate(
                 _ => {}
             }
         }
+
+        out.stats.feature_loop_ms += loop_started.elapsed().as_secs_f32() * 1000.0;
 
         let added = out.vertices.len() - start_len;
         if added == 0 {
@@ -676,6 +730,65 @@ mod tests {
         assert_eq!(whole.triangle_count(), 2, "one segment, one quad");
         // 512 pixels of line, 4 on and 4 off: 64 dashes, two triangles each.
         assert_eq!(cut.triangle_count(), 128);
+    }
+
+    /// An overzoomed tile walks its parent's features, and most of them fall
+    /// outside the part it shows -- but a polygon can surround the window with
+    /// every vertex outside it, and dropping that one leaves a hole where a
+    /// lake should be.
+    #[test]
+    fn an_overzoomed_tile_skips_whats_outside_but_keeps_what_surrounds_it() {
+        let style = style_with(json!({
+            "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
+            "paint": { "fill-color": "#0000ff" }
+        }));
+        // Two polygons in the parent: a small one in the far corner, and one
+        // covering the whole parent tile. Separate features, because the test
+        // is about which features are skipped.
+        let tile = model::Tile {
+            layers: vec![model::Layer::from_tables(
+                "poly".into(),
+                4096,
+                vec![],
+                vec![],
+                vec![
+                    model::Feature::new(
+                        Some(1),
+                        GeomType::Polygon,
+                        vec![vec![
+                            [100.0, 100.0],
+                            [200.0, 100.0],
+                            [200.0, 200.0],
+                            [100.0, 200.0],
+                        ]],
+                        vec![],
+                    ),
+                    model::Feature::new(
+                        Some(2),
+                        GeomType::Polygon,
+                        vec![vec![
+                            [0.0, 0.0],
+                            [4096.0, 0.0],
+                            [4096.0, 4096.0],
+                            [0.0, 4096.0],
+                        ]],
+                        vec![],
+                    ),
+                ],
+            )],
+        };
+        // The bottom-right quarter of the parent: the corner polygon is
+        // outside it, the surrounding one covers it.
+        let decoded = vec![DecodedTile {
+            source_id: "src",
+            tile: &tile,
+            scale: 2.0,
+            offset_x: 0.5,
+            offset_y: 0.5,
+        }];
+        let result = tessellate(&style, 10.0, 512, &decoded);
+        // Only the surrounding polygon: two triangles, not four.
+        assert_eq!(result.triangle_count(), 2);
     }
 
     #[test]
