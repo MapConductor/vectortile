@@ -636,53 +636,63 @@ fn lay_along_line(
     }
 
     let mut out = Vec::with_capacity(shaped.glyphs.len());
-    let mut last_angle: Option<f32> = None;
+    // The pen's own path, before the baseline drop, so spacing is measured
+    // where the letters actually advance.
+    let mut pen: Option<(f32, f32, f32, f32)> = None;
     // The label's turn so far, unwrapped, and the extremes it has reached.
     let mut turned = 0.0f32;
     let mut turn_min = 0.0f32;
     let mut turn_max = 0.0f32;
+    // Set once the road under the label bends more than letters can follow.
+    // From there the rest of the run continues dead straight along the last
+    // good direction, overflowing the bend. A name that sticks out past its
+    // corner still reads as that name; letters piled onto each other -- or a
+    // name silently missing -- do not. 春日通り at a kink came out with the
+    // り sitting apart from its word, which is what this replaces.
+    let mut straightened = false;
+
     for glyph in &shaped.glyphs {
         let along = start + glyph.x * scale;
-        let ((x, y), angle) = line.at(along)?;
-        // A bend under a label piles its letters onto each other, two ways. A
-        // hairpin does it between two adjacent letters; a long gentle curve
-        // does it by degrees, each step passing the adjacent check while the
-        // run folds back over itself -- which is how 新所原停車場堺の岡線 was
-        // drawn as a knot. Both are dropped rather than drawn garbled; the
-        // road simply goes unnamed here.
-        if let Some(last) = last_angle {
-            let step = normalise_degrees(angle - last);
-            if step.abs() > MAX_ANGLE_BETWEEN_GLYPHS {
-                return None;
+        let (mut position, mut angle) = if straightened {
+            ((0.0, 0.0), 0.0)
+        } else {
+            line.at(along)?
+        };
+
+        if let Some((px, py, pangle, palong)) = pen {
+            let spacing = along - palong;
+            if !straightened {
+                // Three ways a bend garbles a run: a hairpin turns adjacent
+                // letters into each other; a long curve folds the run over by
+                // degrees; and the inside of any bend compresses the chord
+                // between pens below their spacing along the road.
+                let step = normalise_degrees(angle - pangle);
+                turned += step;
+                turn_min = turn_min.min(turned);
+                turn_max = turn_max.max(turned);
+                let chord = (position.0 - px).hypot(position.1 - py);
+                if step.abs() > MAX_ANGLE_BETWEEN_GLYPHS
+                    || turn_max - turn_min > MAX_TURN_ACROSS_LABEL
+                    || (spacing > 0.0 && chord < spacing * 0.8)
+                {
+                    straightened = true;
+                }
             }
-            turned += step;
-            turn_min = turn_min.min(turned);
-            turn_max = turn_max.max(turned);
-            if turn_max - turn_min > MAX_TURN_ACROSS_LABEL {
-                return None;
-            }
-        }
-        last_angle = Some(angle);
-        // The bend compresses the inside of the curve: pens keep their spacing
-        // measured along the road, but the straight-line distance between them
-        // shrinks -- the arc is longer than the chord -- and the letters pile
-        // up even where every angle check passes.
-        if let Some(prev) = out.last() {
-            let prev: &GlyphOnLine = prev;
-            let dx = x - prev.at.0;
-            let dy = y - prev.at.1;
-            let spacing = along - (start + shaped.glyphs[out.len() - 1].x * scale);
-            if spacing > 0.0 && dx.hypot(dy) < spacing * 0.8 {
-                return None;
+            if straightened {
+                let (sin, cos) = pangle.to_radians().sin_cos();
+                position = (px + cos * spacing, py + sin * spacing);
+                angle = pangle;
             }
         }
+        pen = Some((position.0, position.1, angle, along));
+
         // The baseline sits below the line's own path, so the text reads as
         // sitting on the road rather than through it.
         let (sin, cos) = angle.to_radians().sin_cos();
         let drop = 0.35 * size;
         out.push(GlyphOnLine {
             code: glyph.code,
-            at: (x - sin * drop, y + cos * drop),
+            at: (position.0 - sin * drop, position.1 + cos * drop),
             angle,
         });
     }
@@ -1358,34 +1368,38 @@ mod tests {
         );
     }
 
-    /// A hairpin under a label piles its letters onto each other; better no
-    /// name here than a garbled one.
+    /// A hairpin under a label used to garble it -- each letter faces its own
+    /// stretch of road, and on a sharp bend those stretches point at each
+    /// other. The run now goes straight from the bend instead, overflowing
+    /// the corner: a name that sticks out still reads as that name.
     #[test]
-    fn drops_a_name_on_a_hairpin_bend() {
+    fn a_hairpin_straightens_the_rest_of_the_name() {
         let store = store(&[0x41, 0x42]);
         let shaped = text::shape("AB", &["F".to_string()], &store, f32::MAX);
 
-        // The line doubles back on itself right where the label would sit.
+        // The line doubles back on itself right where the label sits.
         let hairpin =
             PixelLine::new(vec![(0.0, 100.0), (24.0, 100.0), (0.0, 104.0)]).expect("a line");
-        assert!(
-            lay_along_line(&hairpin, &shaped, 28.0, 24.0, false).is_none(),
-            "a label across a 170-degree bend is unreadable"
+        let glyphs = lay_along_line(&hairpin, &shaped, 28.0, 24.0, false).expect("still drawn");
+        assert_eq!(glyphs.len(), 2);
+        assert_eq!(
+            glyphs[0].angle, glyphs[1].angle,
+            "past the bend the run keeps its direction"
         );
-
-        // A gentle bend is fine.
-        let gentle =
-            PixelLine::new(vec![(0.0, 100.0), (24.0, 100.0), (48.0, 108.0)]).expect("a line");
-        assert!(lay_along_line(&gentle, &shaped, 24.0, 24.0, false).is_some());
+        assert!(
+            glyphs[1].at.0 > glyphs[0].at.0,
+            "and keeps advancing instead of folding back: {:?}",
+            glyphs
+        );
     }
 
     /// A long gentle curve garbles a label by degrees: every adjacent pair of
     /// letters clears the hairpin check while the run folds back on itself.
+    /// Once the total turn passes the limit, the rest of the run goes
+    /// straight.
     #[test]
-    fn drops_a_name_that_curls_around_a_long_bend() {
+    fn a_long_bend_straightens_the_rest_of_the_name() {
         let store = store(&[0x41, 0x42]);
-        // Six glyphs, so the curve is sampled often enough that each step is
-        // gentle.
         let shaped = text::shape("ABABAB", &["F".to_string()], &store, f32::MAX);
 
         // A half-circle: each step turns 30 degrees, well under the adjacent
@@ -1397,10 +1411,20 @@ mod tests {
         }
         let arc = PixelLine::new(points).expect("a line");
         let centre = arc.length() / 2.0;
-        assert!(
-            lay_along_line(&arc, &shaped, centre, 24.0, false).is_none(),
-            "a label around a half-circle overlaps itself"
-        );
+        let glyphs = lay_along_line(&arc, &shaped, centre, 24.0, false).expect("still drawn");
+
+        // The tail shares one direction rather than continuing around.
+        let last = glyphs.last().unwrap().angle;
+        let second_last = glyphs[glyphs.len() - 2].angle;
+        assert_eq!(last, second_last, "the tail went straight");
+        // And the run never comes back towards its own start.
+        let spread: Vec<f32> = glyphs.iter().map(|g| g.angle).collect();
+        let turn = spread
+            .windows(2)
+            .map(|w| normalise_degrees(w[1] - w[0]))
+            .sum::<f32>()
+            .abs();
+        assert!(turn <= 90.0, "total drawn turn stayed bounded: {spread:?}");
     }
 
     /// A road drawn east to west is the same road, and its name still has to
