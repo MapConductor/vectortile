@@ -39,13 +39,13 @@ fn main() {
     for _ in 0..repeat {
         let decoded = vec![DecodedTile {
             // The first *vector* source the style actually draws from. Taking
-        // `sources.keys().next()` picked whichever sorted first — a geojson
-        // source in the MapLibre demo style — and silently tessellated nothing.
-        source_id: style
-            .active_vector_sources(z as f64)
-            .first()
-            .map(|s| s.id.as_str())
-            .unwrap_or(""),
+            // `sources.keys().next()` picked whichever sorted first — a geojson
+            // source in the MapLibre demo style — and silently tessellated nothing.
+            source_id: style
+                .active_vector_sources(z as f64)
+                .first()
+                .map(|s| s.id.as_str())
+                .unwrap_or(""),
             tile: &tile,
             scale: 1.0,
             offset_x: 0.0,
@@ -123,14 +123,20 @@ fn main() {
         use std::collections::HashMap;
         let mut multi = 0usize;
         for layer in &style.layers {
-            if !matches!(layer.kind, LayerKind::Fill | LayerKind::Line | LayerKind::Circle)
-                || !layer.is_visible()
+            if !matches!(
+                layer.kind,
+                LayerKind::Fill | LayerKind::Line | LayerKind::Circle
+            ) || !layer.is_visible()
                 || !layer.applies_at(z as f64)
             {
                 continue;
             }
-            let Some(source_layer) = layer.source_layer.as_deref() else { continue };
-            let Some(data) = tile.layer(source_layer) else { continue };
+            let Some(source_layer) = layer.source_layer.as_deref() else {
+                continue;
+            };
+            let Some(data) = tile.layer(source_layer) else {
+                continue;
+            };
             let key = match layer.kind {
                 LayerKind::Fill => "fill-color",
                 LayerKind::Line => "line-color",
@@ -138,11 +144,22 @@ fn main() {
             };
             let mut counts: HashMap<String, usize> = HashMap::new();
             for feature in &data.features {
-                let ctx = Ctx { zoom: z as f64, layer: Some(data), feature: Some(feature) };
-                if !layer.passes_filter(&ctx) { continue; }
+                let ctx = Ctx {
+                    zoom: z as f64,
+                    layer: Some(data),
+                    feature: Some(feature),
+                };
+                if !layer.passes_filter(&ctx) {
+                    continue;
+                }
                 let c = layer.paint_color(key, &ctx, mvt_render::Color::BLACK);
-                let hex = format!("#{:02X}{:02X}{:02X}/{:.2}",
-                    (c.r * 255.0) as u8, (c.g * 255.0) as u8, (c.b * 255.0) as u8, c.a);
+                let hex = format!(
+                    "#{:02X}{:02X}{:02X}/{:.2}",
+                    (c.r * 255.0) as u8,
+                    (c.g * 255.0) as u8,
+                    (c.b * 255.0) as u8,
+                    c.a
+                );
                 *counts.entry(hex).or_default() += 1;
             }
             if counts.len() > 1 {

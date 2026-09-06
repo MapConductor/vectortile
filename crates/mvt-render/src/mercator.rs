@@ -14,7 +14,9 @@ pub fn merc_x(lon: f64) -> f64 {
 /// Latitude in degrees -> normalized world y.
 pub fn merc_y(lat: f64) -> f64 {
     let clamped = lat.clamp(-89.999_999, 89.999_999);
-    0.5 - (std::f64::consts::PI / 4.0 + clamped * DEG2RAD / 2.0).tan().ln()
+    0.5 - (std::f64::consts::PI / 4.0 + clamped * DEG2RAD / 2.0)
+        .tan()
+        .ln()
         / (2.0 * std::f64::consts::PI)
 }
 
@@ -44,7 +46,12 @@ mod tests {
 
     #[test]
     fn round_trips_through_mercator() {
-        for &(lon, lat) in &[(0.0, 0.0), (139.767, 35.681), (-122.4, 37.8), (180.0, -60.0)] {
+        for &(lon, lat) in &[
+            (0.0, 0.0),
+            (139.767, 35.681),
+            (-122.4, 37.8),
+            (180.0, -60.0),
+        ] {
             let rx = inv_merc_x(merc_x(lon));
             let ry = inv_merc_y(merc_y(lat));
             assert!((rx - lon).abs() < 1e-9, "lon {lon} -> {rx}");

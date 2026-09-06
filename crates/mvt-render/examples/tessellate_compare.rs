@@ -17,7 +17,9 @@ use tiny_skia::{FillRule, Paint, PathBuilder, Pixmap, Transform};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.len() < 7 {
-        eprintln!("usage: tessellate_compare <style.json> <z> <x> <y> <size> <tile.pbf> <out-prefix>");
+        eprintln!(
+            "usage: tessellate_compare <style.json> <z> <x> <y> <size> <tile.pbf> <out-prefix>"
+        );
         std::process::exit(2);
     }
 
@@ -79,7 +81,10 @@ fn main() {
             for t in run_start..run_end {
                 let base = t * stride * 3;
                 pb.move_to(coords[base] * scale, coords[base + 1] * scale);
-                pb.line_to(coords[base + stride] * scale, coords[base + stride + 1] * scale);
+                pb.line_to(
+                    coords[base + stride] * scale,
+                    coords[base + stride + 1] * scale,
+                );
                 pb.line_to(
                     coords[base + stride * 2] * scale,
                     coords[base + stride * 2 + 1] * scale,
@@ -93,7 +98,13 @@ fn main() {
                         .unwrap_or(tiny_skia::Color::TRANSPARENT),
                 );
                 paint.anti_alias = true;
-                candidate.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+                candidate.fill_path(
+                    &path,
+                    &paint,
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
             }
             run_start = run_end;
         }
@@ -138,7 +149,12 @@ fn main() {
         let b = candidate.pixel(wx, wy).unwrap().demultiply();
         println!(
             "worst: {worst} at {wx},{wy}  cpu #{:02X}{:02X}{:02X}  tri #{:02X}{:02X}{:02X}",
-            a.red(), a.green(), a.blue(), b.red(), b.green(), b.blue()
+            a.red(),
+            a.green(),
+            a.blue(),
+            b.red(),
+            b.green(),
+            b.blue()
         );
 
         // Which batches put triangles over the worst pixel, in draw order —

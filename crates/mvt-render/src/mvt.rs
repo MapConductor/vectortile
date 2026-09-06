@@ -28,21 +28,21 @@ type Result<T> = std::result::Result<T, DecodeError>;
 // protobuf primitives
 // ---------------------------------------------------------------------------
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
 impl<'a> Reader<'a> {
-    fn new(buf: &'a [u8]) -> Self {
+    pub(crate) fn new(buf: &'a [u8]) -> Self {
         Reader { buf, pos: 0 }
     }
 
-    fn done(&self) -> bool {
+    pub(crate) fn done(&self) -> bool {
         self.pos >= self.buf.len()
     }
 
-    fn varint(&mut self) -> Result<u64> {
+    pub(crate) fn varint(&mut self) -> Result<u64> {
         let mut result: u64 = 0;
         let mut shift = 0;
         loop {
@@ -62,7 +62,7 @@ impl<'a> Reader<'a> {
         }
     }
 
-    fn bytes(&mut self, len: usize) -> Result<&'a [u8]> {
+    pub(crate) fn bytes(&mut self, len: usize) -> Result<&'a [u8]> {
         let end = self
             .pos
             .checked_add(len)
@@ -75,17 +75,17 @@ impl<'a> Reader<'a> {
         Ok(slice)
     }
 
-    fn length_delimited(&mut self) -> Result<&'a [u8]> {
+    pub(crate) fn length_delimited(&mut self) -> Result<&'a [u8]> {
         let len = self.varint()? as usize;
         self.bytes(len)
     }
 
-    fn fixed32(&mut self) -> Result<u32> {
+    pub(crate) fn fixed32(&mut self) -> Result<u32> {
         let b = self.bytes(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
-    fn fixed64(&mut self) -> Result<u64> {
+    pub(crate) fn fixed64(&mut self) -> Result<u64> {
         let b = self.bytes(8)?;
         Ok(u64::from_le_bytes([
             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
@@ -93,13 +93,13 @@ impl<'a> Reader<'a> {
     }
 
     /// Reads a tag, returning (field_number, wire_type).
-    fn tag(&mut self) -> Result<(u32, u8)> {
+    pub(crate) fn tag(&mut self) -> Result<(u32, u8)> {
         let key = self.varint()?;
         Ok(((key >> 3) as u32, (key & 0x7) as u8))
     }
 
     /// Skips a field whose tag has already been consumed.
-    fn skip(&mut self, wire_type: u8) -> Result<()> {
+    pub(crate) fn skip(&mut self, wire_type: u8) -> Result<()> {
         match wire_type {
             0 => {
                 self.varint()?;

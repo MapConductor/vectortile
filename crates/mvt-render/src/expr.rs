@@ -130,7 +130,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn property(&self, key: &str) -> Val {
+    pub fn property(&self, key: &str) -> Val {
         match (self.layer, self.feature) {
             (Some(layer), Some(feature)) => layer
                 .property(feature, key)
@@ -224,7 +224,11 @@ fn eval_array(items: &[Json], ctx: &Ctx) -> Val {
                 .unwrap_or(0.0),
         ),
         "to-boolean" => Val::Bool(args.first().map(|a| eval(a, ctx).truthy()).unwrap_or(false)),
-        "to-string" => Val::Str(args.first().map(|a| stringify(&eval(a, ctx))).unwrap_or_default()),
+        "to-string" => Val::Str(
+            args.first()
+                .map(|a| stringify(&eval(a, ctx)))
+                .unwrap_or_default(),
+        ),
         "concat" => Val::Str(args.iter().map(|a| stringify(&eval(a, ctx))).collect()),
         "rgb" | "rgba" => eval_rgba(args, ctx),
         "+" | "-" | "*" | "/" | "%" => eval_arithmetic(op, args, ctx),
@@ -501,12 +505,7 @@ fn lerp_values(lo: &Val, hi: &Val, t: f64) -> Val {
     }
     if let (Val::Arr(a), Val::Arr(b)) = (lo, hi) {
         if a.len() == b.len() {
-            return Val::Arr(
-                a.iter()
-                    .zip(b)
-                    .map(|(x, y)| lerp_values(x, y, t))
-                    .collect(),
-            );
+            return Val::Arr(a.iter().zip(b).map(|(x, y)| lerp_values(x, y, t)).collect());
         }
     }
     lo.clone()
@@ -614,8 +613,10 @@ mod tests {
         assert_eq!(eval(&json!(3), &zoom(0.0)), Val::Num(3.0));
         assert_eq!(eval(&json!("#fff"), &zoom(0.0)), Val::Str("#fff".into()));
         assert_eq!(eval(&json!(true), &zoom(0.0)), Val::Bool(true));
-        assert_eq!(eval(&json!(["literal", [1, 2]]), &zoom(0.0)),
-                   Val::Arr(vec![Val::Num(1.0), Val::Num(2.0)]));
+        assert_eq!(
+            eval(&json!(["literal", [1, 2]]), &zoom(0.0)),
+            Val::Arr(vec![Val::Num(1.0), Val::Num(2.0)])
+        );
     }
 
     #[test]
@@ -631,7 +632,15 @@ mod tests {
 
     #[test]
     fn exponential_base_bends_the_ramp() {
-        let e = json!(["interpolate", ["exponential", 2], ["zoom"], 0, 0.0, 10, 10.0]);
+        let e = json!([
+            "interpolate",
+            ["exponential", 2],
+            ["zoom"],
+            0,
+            0.0,
+            10,
+            10.0
+        ]);
         let mid = num(e, 5.0);
         // A base above 1 pushes the curve below the linear midpoint.
         assert!(mid < 5.0, "expected sub-linear midpoint, got {mid}");
@@ -639,7 +648,15 @@ mod tests {
 
     #[test]
     fn interpolates_colors() {
-        let e = json!(["interpolate", ["linear"], ["zoom"], 0, "#000000", 10, "#ffffff"]);
+        let e = json!([
+            "interpolate",
+            ["linear"],
+            ["zoom"],
+            0,
+            "#000000",
+            10,
+            "#ffffff"
+        ]);
         let c = eval(&e, &zoom(5.0)).as_color().expect("color");
         assert!((c.r - 0.5).abs() < 0.01);
     }

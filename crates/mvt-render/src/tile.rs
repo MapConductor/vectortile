@@ -161,7 +161,11 @@ mod tests {
 
     #[test]
     fn distributes_across_mirror_templates() {
-        let style = style_with(14, 0, vec!["https://a/{z}/{x}/{y}.pbf", "https://b/{z}/{x}/{y}.pbf"]);
+        let style = style_with(
+            14,
+            0,
+            vec!["https://a/{z}/{x}/{y}.pbf", "https://b/{z}/{x}/{y}.pbf"],
+        );
         let a = plan_tile(&style, 5, 0, 0).requests[0].url.clone();
         let b = plan_tile(&style, 5, 0, 1).requests[0].url.clone();
         assert!(a.starts_with("https://a/"));

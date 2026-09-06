@@ -124,8 +124,14 @@ fn encode_layer(spec: &LayerSpec) -> Vec<u8> {
         let mut buf = Vec::new();
         let mut tags_buf = Vec::new();
         for (k, v) in &feature.props {
-            varint(keys.iter().position(|x| x == k).unwrap() as u64, &mut tags_buf);
-            varint(values.iter().position(|x| x == v).unwrap() as u64, &mut tags_buf);
+            varint(
+                keys.iter().position(|x| x == k).unwrap() as u64,
+                &mut tags_buf,
+            );
+            varint(
+                values.iter().position(|x| x == v).unwrap() as u64,
+                &mut tags_buf,
+            );
         }
         if !tags_buf.is_empty() {
             delimited(2, &tags_buf, &mut buf);

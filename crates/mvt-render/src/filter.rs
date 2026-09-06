@@ -79,7 +79,11 @@ impl CompiledFilter {
     pub fn matches(&self, layer: &Layer, feature: &Feature) -> bool {
         match self {
             CompiledFilter::Const(value) => *value,
-            CompiledFilter::Key { key, truth, missing } => {
+            CompiledFilter::Key {
+                key,
+                truth,
+                missing,
+            } => {
                 for (k, v) in feature.prop_pairs() {
                     if k == *key {
                         return truth.get(v as usize).copied().unwrap_or(false);
@@ -88,12 +92,8 @@ impl CompiledFilter {
                 *missing
             }
             CompiledFilter::Geometry(mask) => mask[geom_rank(feature.geom_type)],
-            CompiledFilter::All(children) => {
-                children.iter().all(|c| c.matches(layer, feature))
-            }
-            CompiledFilter::Any(children) => {
-                children.iter().any(|c| c.matches(layer, feature))
-            }
+            CompiledFilter::All(children) => children.iter().all(|c| c.matches(layer, feature)),
+            CompiledFilter::Any(children) => children.iter().any(|c| c.matches(layer, feature)),
             CompiledFilter::Not(child) => !child.matches(layer, feature),
             CompiledFilter::Fallback(json, zoom) => {
                 let ctx = Ctx {
@@ -139,7 +139,11 @@ fn compile_array(items: &[Json], whole: &Json, layer: &Layer, zoom: f64) -> Comp
 fn negate(filter: CompiledFilter) -> CompiledFilter {
     match filter {
         CompiledFilter::Const(value) => CompiledFilter::Const(!value),
-        CompiledFilter::Key { key, truth, missing } => CompiledFilter::Key {
+        CompiledFilter::Key {
+            key,
+            truth,
+            missing,
+        } => CompiledFilter::Key {
             key,
             truth: truth.into_iter().map(|t| !t).collect(),
             missing: !missing,
@@ -338,8 +342,7 @@ fn compile_in(
     let predicate: Box<dyn Fn(&Val) -> bool> = if args.len() == 2 {
         match &args[1] {
             Json::Array(rhs_items) => {
-                let is_literal_wrap =
-                    rhs_items.first().and_then(Json::as_str) == Some("literal");
+                let is_literal_wrap = rhs_items.first().and_then(Json::as_str) == Some("literal");
                 if is_literal_wrap {
                     let Some(Json::Array(list)) = rhs_items.get(1) else {
                         return CompiledFilter::Fallback(whole.clone(), zoom);
@@ -375,17 +378,31 @@ fn compile_in(
         Subject::Key(key) => key_pred(layer, &key, false, |v| predicate(v)),
         Subject::Geometry => geometry_pred(|v| predicate(v)),
     };
-    if negated { negate(compiled) } else { compiled }
+    if negated {
+        negate(compiled)
+    } else {
+        compiled
+    }
 }
 
-fn compile_has(negated: bool, args: &[Json], whole: &Json, layer: &Layer, zoom: f64) -> CompiledFilter {
+fn compile_has(
+    negated: bool,
+    args: &[Json],
+    whole: &Json,
+    layer: &Layer,
+    zoom: f64,
+) -> CompiledFilter {
     // The interpreter's `has` looks the argument up as a property name
     // verbatim — `$type` gets no special treatment there.
     let Some(key) = args.first().and_then(Json::as_str) else {
         return CompiledFilter::Fallback(whole.clone(), zoom);
     };
     let compiled = key_pred(layer, key, false, |_| true);
-    if negated { negate(compiled) } else { compiled }
+    if negated {
+        negate(compiled)
+    } else {
+        compiled
+    }
 }
 
 #[cfg(test)]
@@ -411,11 +428,26 @@ mod tests {
             ],
             vec![
                 // kind=residential, lanes=5(int)
-                Feature::new(Some(1), GeomType::LineString, vec![vec![[0.0, 0.0]]], vec![0, 0, 1, 3]),
+                Feature::new(
+                    Some(1),
+                    GeomType::LineString,
+                    vec![vec![[0.0, 0.0]]],
+                    vec![0, 0, 1, 3],
+                ),
                 // kind=motorway, lanes="5"(string), oneway=true
-                Feature::new(Some(2), GeomType::LineString, vec![vec![[0.0, 0.0]]], vec![0, 1, 1, 2, 2, 5]),
+                Feature::new(
+                    Some(2),
+                    GeomType::LineString,
+                    vec![vec![[0.0, 0.0]]],
+                    vec![0, 1, 1, 2, 2, 5],
+                ),
                 // kind=2.5(float!), ref=residential
-                Feature::new(Some(3), GeomType::Polygon, vec![vec![[0.0, 0.0]]], vec![0, 4, 3, 0]),
+                Feature::new(
+                    Some(3),
+                    GeomType::Polygon,
+                    vec![vec![[0.0, 0.0]]],
+                    vec![0, 4, 3, 0],
+                ),
                 // no properties at all
                 Feature::new(Some(4), GeomType::Point, vec![vec![[0.0, 0.0]]], vec![]),
             ],
@@ -428,9 +460,9 @@ mod tests {
             json!(["==", "kind", "residential"]),
             json!(["==", ["get", "kind"], "motorway"]),
             json!(["!=", "kind", "residential"]),
-            json!(["==", "lanes", 5]),          // matches both Int 5 and Str "5"
+            json!(["==", "lanes", 5]), // matches both Int 5 and Str "5"
             json!(["==", "lanes", "5"]),
-            json!(["<", "kind", 3]),             // float kind compares numerically
+            json!(["<", "kind", 3]), // float kind compares numerically
             json!([">=", ["get", "kind"], "m"]), // string ordering
             json!(["in", "kind", "residential", "motorway"]),
             json!(["!in", "kind", "residential"]),
@@ -438,18 +470,18 @@ mod tests {
             json!(["in", "kind", "a residential road"]), // substring haystack
             json!(["has", "oneway"]),
             json!(["!has", "oneway"]),
-            json!(["has", "$type"]),             // property literally named $type
+            json!(["has", "$type"]), // property literally named $type
             json!(["==", "$type", "Polygon"]),
             json!(["in", "$type", "Point", "LineString"]),
             json!(["all", ["==", "kind", "motorway"], ["has", "oneway"]]),
             json!(["any", ["==", "kind", "residential"], ["==", "kind", 2.5]]),
             json!(["none", ["has", "oneway"], ["==", "kind", "residential"]]),
             json!(["!", ["has", "lanes"]]),
-            json!(["==", "absent-key", "x"]),    // folds to Const(false)
-            json!(["!=", "absent-key", "x"]),    // folds to Const(true)
-            json!(["==", "kind", "ferry"]),      // value absent from table
+            json!(["==", "absent-key", "x"]), // folds to Const(false)
+            json!(["!=", "absent-key", "x"]), // folds to Const(true)
+            json!(["==", "kind", "ferry"]),   // value absent from table
             json!(["==", ["get", "kind"], ["get", "ref"]]), // dynamic rhs -> fallback
-            json!(["==", "$id", 2]),             // unsupported subject -> fallback
+            json!(["==", "$id", 2]),          // unsupported subject -> fallback
             json!(["all"]),
             json!(["any"]),
         ]
@@ -492,7 +524,11 @@ mod tests {
 
         // An `all` containing an impossible arm dies with it.
         let all = CompiledFilter::compile(
-            Some(&json!(["all", ["==", "kind", "motorway"], ["==", "nope", "x"]])),
+            Some(&json!([
+                "all",
+                ["==", "kind", "motorway"],
+                ["==", "nope", "x"]
+            ])),
             &layer,
             14.0,
         );

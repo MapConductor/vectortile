@@ -4,15 +4,15 @@
 //! and iOS with no platform 2D API and no C toolchain involved. That is what
 //! makes "identical output on every backend" achievable.
 
-use tiny_skia::{
-    FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform,
-};
+use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::color::Color;
 use crate::expr::Ctx;
 use crate::filter::CompiledFilter;
 use crate::model::{self, GeomType};
 use crate::style::{Layer, LayerKind, Style};
+use crate::symbol;
+use crate::text::GlyphStore;
 
 /// The reference tile size the style spec's pixel units are defined against.
 const REFERENCE_TILE_SIZE: f32 = 512.0;
@@ -38,6 +38,22 @@ pub fn render(
     zoom: f64,
     tile_size: u32,
     decoded: &[DecodedTile],
+) -> Option<(Pixmap, RenderStats)> {
+    render_with_glyphs(style, zoom, tile_size, decoded, &GlyphStore::new())
+}
+
+/// Renders one target tile, with labels if glyphs were supplied.
+///
+/// Labels come last and in one pass of their own: two of them on the same
+/// pixels is unreadable rather than blended, so every label is collected,
+/// tested against the ones already kept, and only then drawn. See
+/// [`crate::symbol`].
+pub fn render_with_glyphs(
+    style: &Style,
+    zoom: f64,
+    tile_size: u32,
+    decoded: &[DecodedTile],
+    glyphs: &GlyphStore,
 ) -> Option<(Pixmap, RenderStats)> {
     let mut pixmap = Pixmap::new(tile_size, tile_size)?;
     let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
@@ -82,6 +98,18 @@ pub fn render(
         if drawn > 0 {
             stats.layers_drawn += 1;
             stats.features_drawn += drawn;
+        }
+    }
+
+    if !glyphs.is_empty() {
+        let labels = symbol::collect(style, zoom, tile_size, paint_scale, decoded, glyphs);
+        // Two pixels of padding: labels that only just clear each other read
+        // as one smear at small sizes.
+        let placed = symbol::place(labels, 2.0 * paint_scale);
+        if !placed.is_empty() {
+            stats.layers_drawn += 1;
+            stats.features_drawn += placed.len();
+            symbol::draw(&mut pixmap, &placed, glyphs);
         }
     }
 
@@ -300,7 +328,8 @@ fn draw_line(
             Some("miter") => LineJoin::Miter,
             _ => LineJoin::Round,
         },
-        miter_limit: layer.layout_value("line-miter-limit", ctx)
+        miter_limit: layer
+            .layout_value("line-miter-limit", ctx)
             .and_then(|v| v.as_f64())
             .unwrap_or(2.0) as f32,
         ..Stroke::default()

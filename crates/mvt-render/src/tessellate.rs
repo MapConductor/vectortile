@@ -236,7 +236,14 @@ pub fn tessellate(
             match layer.kind {
                 LayerKind::Fill => {
                     let started = std::time::Instant::now();
-                    fill_feature(feature, tile, unify, color, &mut out.vertices, &mut out.stats);
+                    fill_feature(
+                        feature,
+                        tile,
+                        unify,
+                        color,
+                        &mut out.vertices,
+                        &mut out.stats,
+                    );
                     out.stats.fill_ms += started.elapsed().as_secs_f32() * 1000.0;
                 }
                 LayerKind::Line => {
@@ -318,36 +325,35 @@ fn fill_feature(
     let mut polygon: Vec<Vec<[f32; 2]>> = Vec::new();
     let mut exterior_sign = 0.0_f32;
 
-    let flush = |polygon: &mut Vec<Vec<[f32; 2]>>,
-                 out: &mut Vec<f32>,
-                 stats: &mut TessellationStats| {
-        if polygon.is_empty() {
-            return;
-        }
-        let mut flat: Vec<f64> = Vec::new();
-        let mut holes: Vec<usize> = Vec::new();
-        for (index, ring) in polygon.iter().enumerate() {
-            if index > 0 {
-                holes.push(flat.len() / 2);
+    let flush =
+        |polygon: &mut Vec<Vec<[f32; 2]>>, out: &mut Vec<f32>, stats: &mut TessellationStats| {
+            if polygon.is_empty() {
+                return;
             }
-            for p in ring {
-                flat.push(p[0] as f64);
-                flat.push(p[1] as f64);
-            }
-        }
-        match earcutr::earcut(&flat, &holes, 2) {
-            Ok(indices) => {
-                for i in indices {
-                    push_vertex(out, flat[i * 2] as f32, flat[i * 2 + 1] as f32, color);
+            let mut flat: Vec<f64> = Vec::new();
+            let mut holes: Vec<usize> = Vec::new();
+            for (index, ring) in polygon.iter().enumerate() {
+                if index > 0 {
+                    holes.push(flat.len() / 2);
+                }
+                for p in ring {
+                    flat.push(p[0] as f64);
+                    flat.push(p[1] as f64);
                 }
             }
-            Err(_) => {
-                stats.earcut_failures += 1;
-                stats.earcut_failed_vertices += flat.len() / 2;
+            match earcutr::earcut(&flat, &holes, 2) {
+                Ok(indices) => {
+                    for i in indices {
+                        push_vertex(out, flat[i * 2] as f32, flat[i * 2 + 1] as f32, color);
+                    }
+                }
+                Err(_) => {
+                    stats.earcut_failures += 1;
+                    stats.earcut_failed_vertices += flat.len() / 2;
+                }
             }
-        }
-        polygon.clear();
-    };
+            polygon.clear();
+        };
 
     for part in &feature.parts {
         if part.len() < 3 {
@@ -517,7 +523,12 @@ mod tests {
         let tile = tile_with(
             "poly",
             GeomType::Polygon,
-            vec![vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [0.0, 1000.0]]],
+            vec![vec![
+                [0.0, 0.0],
+                [1000.0, 0.0],
+                [1000.0, 1000.0],
+                [0.0, 1000.0],
+            ]],
         );
         let result = tessellate(&style, 10.0, 512, &decoded(&tile));
 
@@ -541,7 +552,12 @@ mod tests {
             GeomType::Polygon,
             vec![
                 vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [0.0, 1000.0]],
-                vec![[400.0, 400.0], [400.0, 600.0], [600.0, 600.0], [600.0, 400.0]],
+                vec![
+                    [400.0, 400.0],
+                    [400.0, 600.0],
+                    [600.0, 600.0],
+                    [600.0, 400.0],
+                ],
             ],
         );
         let result = tessellate(&style, 10.0, 512, &decoded(&tile));
@@ -566,7 +582,12 @@ mod tests {
             GeomType::Polygon,
             vec![
                 vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
-                vec![[500.0, 500.0], [600.0, 500.0], [600.0, 600.0], [500.0, 600.0]],
+                vec![
+                    [500.0, 500.0],
+                    [600.0, 500.0],
+                    [600.0, 600.0],
+                    [500.0, 600.0],
+                ],
             ],
         );
         let result = tessellate(&style, 10.0, 512, &decoded(&tile));
@@ -604,21 +625,33 @@ mod tests {
             "poly".into(),
             4096,
             vec!["kind".into()],
-            vec![model::Value::String("a".into()), model::Value::String("b".into())],
+            vec![
+                model::Value::String("a".into()),
+                model::Value::String("b".into()),
+            ],
             vec![
                 model::Feature::new(
-                    Some(1), GeomType::Polygon,
+                    Some(1),
+                    GeomType::Polygon,
                     vec![vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]]],
                     vec![0, 0],
                 ),
                 model::Feature::new(
-                    Some(2), GeomType::Polygon,
-                    vec![vec![[200.0, 200.0], [300.0, 200.0], [300.0, 300.0], [200.0, 300.0]]],
+                    Some(2),
+                    GeomType::Polygon,
+                    vec![vec![
+                        [200.0, 200.0],
+                        [300.0, 200.0],
+                        [300.0, 300.0],
+                        [200.0, 300.0],
+                    ]],
                     vec![0, 1],
                 ),
             ],
         );
-        let tile = model::Tile { layers: vec![layer] };
+        let tile = model::Tile {
+            layers: vec![layer],
+        };
         let result = tessellate(&style, 10.0, 512, &decoded(&tile));
 
         let stride = VERTEX_STRIDE;
@@ -628,7 +661,10 @@ mod tests {
         let blues: Vec<f32> = (0..result.vertex_count())
             .map(|i| result.vertices[i * stride + 4])
             .collect();
-        assert!(reds.iter().any(|r| *r > 0.9), "the first feature should be red");
+        assert!(
+            reds.iter().any(|r| *r > 0.9),
+            "the first feature should be red"
+        );
         assert!(blues.iter().any(|b| *b > 0.9), "the second should be blue");
     }
 
@@ -655,8 +691,16 @@ mod tests {
         let tile = tile_with(
             "poly",
             GeomType::Polygon,
-            vec![vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [0.0, 1000.0]]],
+            vec![vec![
+                [0.0, 0.0],
+                [1000.0, 0.0],
+                [1000.0, 1000.0],
+                [0.0, 1000.0],
+            ]],
         );
-        assert_eq!(tessellate(&style, 10.0, 512, &decoded(&tile)).triangle_count(), 0);
+        assert_eq!(
+            tessellate(&style, 10.0, 512, &decoded(&tile)).triangle_count(),
+            0
+        );
     }
 }

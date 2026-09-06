@@ -29,7 +29,8 @@ pub enum LayerKind {
     Fill,
     Line,
     Circle,
-    /// Recognised but not drawn (symbol, raster, hillshade, fill-extrusion, …).
+    Symbol,
+    /// Recognised but not drawn (raster, hillshade, fill-extrusion, …).
     Unsupported,
 }
 
@@ -40,6 +41,7 @@ impl LayerKind {
             "fill" => LayerKind::Fill,
             "line" => LayerKind::Line,
             "circle" => LayerKind::Circle,
+            "symbol" => LayerKind::Symbol,
             _ => LayerKind::Unsupported,
         }
     }
@@ -141,6 +143,12 @@ impl Layer {
             .unwrap_or(default)
     }
 
+    pub fn layout_number(&self, key: &str, ctx: &Ctx, default: f64) -> f64 {
+        self.layout_value(key, ctx)
+            .and_then(|v| v.as_f64())
+            .unwrap_or(default)
+    }
+
     pub fn paint_color(&self, key: &str, ctx: &Ctx, default: Color) -> Color {
         self.paint_value(key, ctx)
             .and_then(|v| v.as_color())
@@ -149,7 +157,10 @@ impl Layer {
 
     /// Whether this paint property can differ between features of a layer.
     pub fn paint_varies_per_feature(&self, key: &str) -> bool {
-        self.paint.get(key).map(expr::depends_on_feature).unwrap_or(false)
+        self.paint
+            .get(key)
+            .map(expr::depends_on_feature)
+            .unwrap_or(false)
     }
 
     pub fn paint_string(&self, key: &str, ctx: &Ctx) -> Option<String> {
@@ -166,6 +177,13 @@ impl Layer {
 #[derive(Debug, Clone)]
 pub struct Style {
     pub name: Option<String>,
+    /// The style's `glyphs` URL template, e.g.
+    /// `https://…/{fontstack}/{range}.pbf`.
+    ///
+    /// Kept rather than resolved here: fetching is the host's job, and a
+    /// renderer that reached the network would not compile for wasm the same
+    /// way it does for Android.
+    pub glyphs: Option<String>,
     pub sources: BTreeMap<String, Source>,
     pub layers: Vec<Layer>,
     /// Whether the style composes other styles through Mapbox's `imports`.
@@ -179,8 +197,8 @@ pub struct Style {
 
 impl Style {
     pub fn parse(json_text: &str) -> Result<Style, StyleError> {
-        let root: Json =
-            serde_json::from_str(json_text).map_err(|e| StyleError(format!("invalid JSON: {e}")))?;
+        let root: Json = serde_json::from_str(json_text)
+            .map_err(|e| StyleError(format!("invalid JSON: {e}")))?;
         Style::from_json(&root)
     }
 
@@ -190,6 +208,7 @@ impl Style {
             .ok_or_else(|| StyleError("style root is not an object".into()))?;
 
         let name = obj.get("name").and_then(Json::as_str).map(str::to_owned);
+        let glyphs = obj.get("glyphs").and_then(Json::as_str).map(str::to_owned);
 
         let mut sources = BTreeMap::new();
         if let Some(map) = obj.get("sources").and_then(Json::as_object) {
@@ -213,6 +232,7 @@ impl Style {
 
         Ok(Style {
             name,
+            glyphs,
             sources,
             layers,
             has_imports,
@@ -329,7 +349,11 @@ impl Style {
             ));
         }
 
-        if !self.layers.iter().any(|l| l.kind.is_drawable() && l.is_visible()) {
+        if !self
+            .layers
+            .iter()
+            .any(|l| l.kind.is_drawable() && l.is_visible())
+        {
             out.push("no layer in this style can be drawn; tiles will be empty".to_string());
         }
 
@@ -471,8 +495,8 @@ mod tests {
         let style = sample();
         assert_eq!(style.layers[0].kind, LayerKind::Background);
         assert_eq!(style.layers[1].kind, LayerKind::Fill);
-        assert_eq!(style.layers[2].kind, LayerKind::Unsupported);
-        assert_eq!(style.unsupported_layer_types(), vec!["symbol".to_string()]);
+        assert_eq!(style.layers[2].kind, LayerKind::Symbol);
+        assert!(style.unsupported_layer_types().is_empty());
     }
 
     #[test]
@@ -486,14 +510,16 @@ mod tests {
     #[test]
     fn active_sources_skip_background_and_unsupported_layers() {
         let style = sample();
-        // Only the fill layer contributes a vector source; symbol layers are
-        // not drawn, so they must not cause a fetch.
+        // Background needs no source. The fill and the symbol layer share one,
+        // and a symbol layer counts now that labels are drawn — a style whose
+        // only user of a source is its labels still has to fetch it.
         let active = style.active_vector_sources(5.0);
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, "osm");
 
-        // Below the fill layer's minzoom nothing needs fetching.
-        assert!(style.active_vector_sources(0.0).is_empty());
+        // The symbol layer has no zoom range, so it keeps the source live even
+        // below the fill layer's minzoom.
+        assert_eq!(style.active_vector_sources(0.0).len(), 1);
     }
 
     #[test]
@@ -550,12 +576,10 @@ mod tests {
     }
 
     #[test]
-    fn a_healthy_style_reports_only_undrawn_layer_types() {
-        let messages = sample().diagnostics();
-        // The sample has a symbol layer and a raster source with a plain https
-        // TileJSON url; neither is a defect worth more than one line.
-        assert_eq!(messages.len(), 1, "{messages:?}");
-        assert!(messages[0].contains("symbol"));
+    fn a_healthy_style_reports_nothing() {
+        // Every layer type in the sample is drawn now that symbol layers are,
+        // so there is nothing to report.
+        assert!(sample().diagnostics().is_empty());
     }
 
     #[test]
@@ -563,10 +587,13 @@ mod tests {
         let style = Style::from_json(&json!({
             "version": 8,
             "sources": {},
-            "layers": [{ "id": "labels", "type": "symbol" }]
+            "layers": [{ "id": "hills", "type": "hillshade" }]
         }))
         .unwrap();
-        assert!(style.diagnostics().iter().any(|m| m.contains("tiles will be empty")));
+        assert!(style
+            .diagnostics()
+            .iter()
+            .any(|m| m.contains("tiles will be empty")));
     }
 
     #[test]

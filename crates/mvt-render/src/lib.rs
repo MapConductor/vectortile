@@ -20,22 +20,31 @@
 //!
 //! # Scope
 //!
-//! Draws `background`, `fill`, `line` and `circle` layers. `symbol` layers are
-//! parsed but not drawn: label placement needs collision detection that is
-//! consistent across tile boundaries, which a per-tile renderer cannot do
-//! without a shared placement pass. [`Renderer::unsupported_layer_types`]
-//! reports what a given style loses.
+//! Draws `background`, `fill`, `line`, `circle` and `symbol` layers.
+//!
+//! Labels need glyphs, which the host fetches from the style's `glyphs` URL
+//! and hands over as a [`text::GlyphStore`]; without one the symbol layers are
+//! simply skipped and everything else still draws. Placement is per tile, so a
+//! label near an edge is placed without knowing what its neighbour placed —
+//! see [`symbol`]. Point placement only; text along a line and sprite icons
+//! are reported by [`symbol::unsupported`] rather than drawn.
+//!
+//! [`Renderer::unsupported_layer_types`] reports layer types nothing here
+//! draws at all: raster, hillshade, fill-extrusion.
 
 pub mod color;
 pub mod expr;
 pub mod filter;
+pub mod glyphs;
 pub mod mercator;
 pub mod model;
 pub mod mvt;
 pub mod raster;
 pub mod style;
+pub mod symbol;
 #[cfg(feature = "tessellate")]
 pub mod tessellate;
+pub mod text;
 pub mod tile;
 
 #[cfg(test)]
@@ -57,6 +66,8 @@ pub enum RenderError {
     BadTileSize(u32),
     /// PNG encoding failed.
     Encode(String),
+    /// A fetched glyph range could not be parsed.
+    Decode(String),
 }
 
 impl std::fmt::Display for RenderError {
@@ -64,6 +75,7 @@ impl std::fmt::Display for RenderError {
         match self {
             RenderError::Style(e) => write!(f, "{e}"),
             RenderError::BadTileSize(n) => write!(f, "invalid tile size: {n}"),
+            RenderError::Decode(e) => write!(f, "decode error: {e}"),
             RenderError::Encode(e) => write!(f, "png encode failed: {e}"),
         }
     }
@@ -83,17 +95,84 @@ impl From<StyleError> for RenderError {
 /// layers, and re-parsing per tile would dominate the render cost.
 pub struct Renderer {
     style: Style,
+    /// Glyphs the host has fetched so far, kept across tiles.
+    ///
+    /// One range covers 256 codepoints and serves every tile that needs those
+    /// characters, so this fills quickly and then stops costing anything. It
+    /// lives on the renderer rather than beside it because a restyle keeps the
+    /// glyphs — a colour change does not alter what a label says.
+    glyphs: text::GlyphStore,
+}
+
+/// One `{fontstack}/{range}.pbf` the renderer needs and does not have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlyphRequest {
+    pub fontstack: String,
+    /// First codepoint of the 256-wide range.
+    pub range_start: u32,
+}
+
+impl GlyphRequest {
+    /// Fills the `{fontstack}` and `{range}` placeholders of a style's
+    /// `glyphs` template.
+    pub fn url(&self, template: &str) -> String {
+        template.replace("{fontstack}", &self.fontstack).replace(
+            "{range}",
+            &format!("{}-{}", self.range_start, self.range_start + 255),
+        )
+    }
 }
 
 impl Renderer {
     pub fn new(style_json: &str) -> Result<Renderer, RenderError> {
         Ok(Renderer {
             style: Style::parse(style_json)?,
+            glyphs: text::GlyphStore::new(),
         })
     }
 
     pub fn from_style(style: Style) -> Renderer {
-        Renderer { style }
+        Renderer {
+            style,
+            glyphs: text::GlyphStore::new(),
+        }
+    }
+
+    /// The style's `glyphs` URL template, if it has one.
+    pub fn glyphs_url_template(&self) -> Option<&str> {
+        self.style.glyphs.as_deref()
+    }
+
+    /// Takes one fetched `.pbf` and keeps its glyphs.
+    pub fn add_glyphs(&mut self, pbf: &[u8]) -> Result<usize, RenderError> {
+        let stacks = glyphs::decode(pbf).map_err(|e| RenderError::Decode(e.to_string()))?;
+        let mut added = 0;
+        for stack in stacks {
+            added += stack.glyphs.len();
+            self.glyphs.insert(stack);
+        }
+        Ok(added)
+    }
+
+    pub fn has_glyphs(&self) -> bool {
+        !self.glyphs.is_empty()
+    }
+
+    /// What this tile's labels need and the renderer does not have.
+    ///
+    /// Ranges depend on the text in the tile, so this is answered after the
+    /// tile is decoded rather than up front — fetching every range a font
+    /// could have means 82 files for CJK alone, nearly all of them unused.
+    pub fn needed_glyphs(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_data: &[Option<&[u8]>],
+    ) -> Vec<GlyphRequest> {
+        let plan = self.plan(z, x, y);
+        let decoded = self.decode_plan(&plan, tile_data);
+        symbol::needed_glyphs(&self.style, z as f64, &decoded, &self.glyphs)
     }
 
     pub fn style(&self) -> &Style {
@@ -240,8 +319,7 @@ impl Renderer {
         let result = tessellate::tessellate(&self.style, z as f64, tile_size, &views);
         let tessellate_ms = tessellate_started.elapsed().as_secs_f32() * 1000.0;
 
-        let mut packed =
-            Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
+        let mut packed = Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
         packed.push(result.extent as f32);
         match result.background {
             Some(color) => packed.extend_from_slice(&[1.0, color.r, color.g, color.b, color.a]),
@@ -278,8 +356,15 @@ impl Renderer {
         }
 
         let plan = self.plan(z, x, y);
-        let mut decoded = Vec::with_capacity(plan.requests.len());
+        let decoded = self.decode_plan(&plan, tile_data);
 
+        raster::render_with_glyphs(&self.style, z as f64, tile_size, &decoded, &self.glyphs)
+            .ok_or(RenderError::BadTileSize(tile_size))
+    }
+
+    /// Decodes whatever arrived for a plan, in the plan's own order.
+    fn decode_plan(&self, plan: &TilePlan, tile_data: &[Option<&[u8]>]) -> Vec<DecodedTile> {
+        let mut decoded = Vec::with_capacity(plan.requests.len());
         for (request, data) in plan.requests.iter().zip(tile_data.iter().chain(
             // Tolerate a short array rather than failing the whole tile.
             std::iter::repeat(&None),
@@ -301,9 +386,7 @@ impl Renderer {
                 offset_y: request.offset_y,
             });
         }
-
-        raster::render(&self.style, z as f64, tile_size, &decoded)
-            .ok_or(RenderError::BadTileSize(tile_size))
+        decoded
     }
 }
 
@@ -386,7 +469,11 @@ mod tests {
         let y = (3000.0 / 4096.0 * 512.0) as u32;
         // Sample on the right half, away from water and the motorway.
         let (r, g, b, _) = pixel(&pixmap, 450, y);
-        assert_eq!((r, g, b), (255, 255, 255), "service road must be filtered out");
+        assert_eq!(
+            (r, g, b),
+            (255, 255, 255),
+            "service road must be filtered out"
+        );
     }
 
     #[test]
@@ -467,7 +554,10 @@ mod tests {
             .unwrap()
             .0;
         let (r, g, b, _) = pixel(&after, 220, 230);
-        assert!(r > 200 && g < 50 && b < 50, "expected red, got ({r},{g},{b})");
+        assert!(
+            r > 200 && g < 50 && b < 50,
+            "expected red, got ({r},{g},{b})"
+        );
     }
 
     #[test]
@@ -533,7 +623,159 @@ mod tests {
     #[test]
     fn reports_unsupported_layers_rather_than_failing() {
         let renderer = Renderer::from_style(test_style());
-        assert_eq!(renderer.unsupported_layer_types(), vec!["symbol".to_string()]);
+        // symbol left this list when labels started being drawn; hillshade
+        // stands in for the types that are still parsed and skipped.
+        assert!(renderer.unsupported_layer_types().is_empty());
+    }
+
+    /// A style with labels has to say which glyph files it needs, and the
+    /// list has to shrink as they arrive. Getting this wrong is not visible:
+    /// asking for nothing renders an unlabelled map, and asking for everything
+    /// is 82 requests per CJK font.
+    #[test]
+    fn asks_for_the_glyph_ranges_its_labels_need() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "glyphs": "https://example.com/fonts/{fontstack}/{range}.pbf",
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [{
+                "id": "labels", "type": "symbol", "source": "src", "source-layer": "place",
+                "layout": { "text-field": "{name}", "text-font": ["Noto Sans Regular"] }
+            }]
+        }))
+        .unwrap();
+        let mut renderer = Renderer::from_style(style);
+
+        let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "place".into(),
+            extent: 4096,
+            // Latin lives in range 0; 中 (U+4E2D) in range 78.
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Point,
+                points: vec![(2048, 2048)],
+                props: vec![("name".into(), "A中".into())],
+            }],
+        }]);
+
+        let needed = renderer.needed_glyphs(10, 512, 300, &[Some(&tile)]);
+        let ranges: Vec<u32> = needed.iter().map(|r| r.range_start).collect();
+        assert_eq!(ranges, vec![0, 78 * 256]);
+        assert_eq!(
+            needed[1].url(renderer.glyphs_url_template().unwrap()),
+            "https://example.com/fonts/Noto Sans Regular/19968-20223.pbf"
+        );
+
+        // Once a range is in, it is not asked for again.
+        renderer
+            .add_glyphs(&glyph_pbf("Noto Sans Regular", &[0x41]))
+            .expect("glyphs decode");
+        let ranges: Vec<u32> = renderer
+            .needed_glyphs(10, 512, 300, &[Some(&tile)])
+            .iter()
+            .map(|r| r.range_start)
+            .collect();
+        assert_eq!(ranges, vec![78 * 256]);
+    }
+
+    /// Labels only appear once glyphs arrive; before that the rest of the tile
+    /// still has to draw.
+    #[test]
+    fn draws_labels_only_once_glyphs_are_supplied() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "glyphs": "https://example.com/{fontstack}/{range}.pbf",
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [
+                { "id": "bg", "type": "background", "paint": { "background-color": "#ffffff" } },
+                {
+                    "id": "labels", "type": "symbol", "source": "src", "source-layer": "place",
+                    "layout": { "text-field": "{name}", "text-font": ["F"], "text-size": 40 },
+                    "paint": { "text-color": "#000000" }
+                }
+            ]
+        }))
+        .unwrap();
+        let mut renderer = Renderer::from_style(style);
+        let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "place".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Point,
+                points: vec![(2048, 2048)],
+                props: vec![("name".into(), "A".into())],
+            }],
+        }]);
+
+        let ink = |renderer: &Renderer| {
+            let (pixmap, _) = renderer
+                .render_pixmap(10, 512, 300, 256, &[Some(&tile)])
+                .expect("renders");
+            pixmap
+                .pixels()
+                .iter()
+                .filter(|p| p.red() < 200 || p.green() < 200 || p.blue() < 200)
+                .count()
+        };
+
+        assert_eq!(ink(&renderer), 0, "no glyphs, no labels");
+        renderer.add_glyphs(&glyph_pbf("F", &[0x41])).unwrap();
+        assert!(ink(&renderer) > 0, "the label draws once its glyphs are in");
+    }
+
+    /// Builds a glyph pbf carrying a solid square for each codepoint.
+    fn glyph_pbf(stack: &str, codes: &[u32]) -> Vec<u8> {
+        fn varint(out: &mut Vec<u8>, mut v: u64) {
+            loop {
+                let b = (v & 0x7f) as u8;
+                v >>= 7;
+                if v == 0 {
+                    out.push(b);
+                    return;
+                }
+                out.push(b | 0x80);
+            }
+        }
+        fn tag(out: &mut Vec<u8>, field: u32, wire: u8) {
+            varint(out, ((field as u64) << 3) | wire as u64);
+        }
+        fn num(out: &mut Vec<u8>, field: u32, v: u64) {
+            tag(out, field, 0);
+            varint(out, v);
+        }
+        fn bytes(out: &mut Vec<u8>, field: u32, v: &[u8]) {
+            tag(out, field, 2);
+            varint(out, v.len() as u64);
+            out.extend_from_slice(v);
+        }
+
+        let (w, h) = (16u32, 16u32);
+        let buffer = glyphs::BUFFER;
+        let bw = w + 2 * buffer;
+        let bh = h + 2 * buffer;
+        let mut bitmap = vec![0u8; (bw * bh) as usize];
+        for y in buffer..(buffer + h) {
+            for x in buffer..(buffer + w) {
+                bitmap[(y * bw + x) as usize] = 255;
+            }
+        }
+
+        let mut stack_msg = Vec::new();
+        bytes(&mut stack_msg, 1, stack.as_bytes());
+        bytes(&mut stack_msg, 2, b"0-255");
+        for code in codes {
+            let mut g = Vec::new();
+            num(&mut g, 1, *code as u64);
+            bytes(&mut g, 2, &bitmap);
+            num(&mut g, 3, w as u64);
+            num(&mut g, 4, h as u64);
+            num(&mut g, 5, 0);
+            num(&mut g, 6, ((h as i32) << 1) as u64);
+            num(&mut g, 7, (w + 2) as u64);
+            bytes(&mut stack_msg, 3, &g);
+        }
+        let mut out = Vec::new();
+        bytes(&mut out, 1, &stack_msg);
+        out
     }
 
     #[test]
