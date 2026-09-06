@@ -78,7 +78,35 @@ pub struct SpriteSheet {
     icons: HashMap<String, Icon>,
     /// The style's id for this sheet, when it listed one.
     id: Option<String>,
+    /// Icons already resolved to pixels at a given size and tint, so the SDF
+    /// thresholding runs once per look rather than once per tile. Interior
+    /// state behind a mutex: tiles render in parallel over a shared sheet.
+    rendered: std::sync::Mutex<HashMap<IconKey, std::sync::Arc<RenderedIcon>>>,
 }
+
+/// What makes two draws of an icon the same pixels.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+struct IconKey {
+    x: u32,
+    y: u32,
+    scale: u32,
+    color: [u32; 4],
+    halo_color: [u32; 4],
+    halo_width: u32,
+}
+
+/// An icon at one drawn size and tint: straight-alpha RGBA, blended at blit.
+#[derive(Debug)]
+struct RenderedIcon {
+    width: i32,
+    height: i32,
+    rgba: Vec<u8>,
+}
+
+/// Rendered icons kept before the cache empties itself. A style has a couple
+/// of hundred icons and a handful of sizes; this is generous, and clearing
+/// beats an LRU because the working set refills in one tile.
+const ICON_CACHE_CAP: usize = 2048;
 
 impl SpriteSheet {
     /// Reads an index and its sheet.
@@ -130,6 +158,7 @@ impl SpriteSheet {
             image,
             icons,
             id: None,
+            rendered: std::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -394,6 +423,57 @@ pub fn draw(
     if paint.opacity <= 0.0 || paint.scale <= 0.0 {
         return;
     }
+    // The common case -- unrotated, unstretched -- is drawn from a cached
+    // rendering: thresholding an SDF per pixel per tile for the same pin at
+    // the same size was the label pass's repeated work. Rotation and
+    // stretching stay on the direct path; arrows turn with every road segment
+    // and caching per angle would mostly miss.
+    if paint.rotation == 0.0 && paint.stretch_to.is_none() {
+        let key = IconKey {
+            x: icon.x,
+            y: icon.y,
+            scale: paint.scale.to_bits(),
+            color: color_bits(paint.color),
+            halo_color: color_bits(paint.halo_color),
+            halo_width: paint.halo_width.to_bits(),
+        };
+        let cached = sheet
+            .rendered
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&key).cloned());
+        let rendered = match cached {
+            Some(rendered) => rendered,
+            None => {
+                let Some(rendered) = render_icon(sheet, icon, paint) else {
+                    return;
+                };
+                let rendered = std::sync::Arc::new(rendered);
+                if let Ok(mut cache) = sheet.rendered.lock() {
+                    if cache.len() >= ICON_CACHE_CAP {
+                        cache.clear();
+                    }
+                    cache.insert(key, rendered.clone());
+                }
+                rendered
+            }
+        };
+        blit_rendered(pixmap, &rendered, paint.opacity, anchor, at);
+        return;
+    }
+    draw_direct(pixmap, sheet, icon, paint, anchor, at);
+}
+
+/// The uncached path: samples the sheet (or its distance field) per target
+/// pixel, honouring rotation and stretching.
+fn draw_direct(
+    pixmap: &mut Pixmap,
+    sheet: &SpriteSheet,
+    icon: &Icon,
+    paint: &IconPaint,
+    anchor: Anchor,
+    at: (f32, f32),
+) {
     let (w, h) = drawn_size(icon, paint);
     if w < 0.5 || h < 0.5 {
         return;
@@ -487,6 +567,93 @@ pub fn draw(
                 a: 1.0,
             };
             blend(pixmap, px, py, color, a * paint.opacity);
+        }
+    }
+}
+
+fn color_bits(color: Color) -> [u32; 4] {
+    [
+        color.r.to_bits(),
+        color.g.to_bits(),
+        color.b.to_bits(),
+        color.a.to_bits(),
+    ]
+}
+
+/// Draws an icon once, into its own buffer, at opacity one.
+///
+/// Opacity is left out of the key on purpose: the sample style fades its
+/// one-way arrows in over a zoom level, and every opacity would be its own
+/// cache entry. It multiplies cleanly at blit time instead.
+fn render_icon(sheet: &SpriteSheet, icon: &Icon, paint: &IconPaint) -> Option<RenderedIcon> {
+    let (w, h) = drawn_size(icon, paint);
+    let width = w.ceil() as i32 + 1;
+    let height = h.ceil() as i32 + 1;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    let mut scratch = Pixmap::new(width as u32, height as u32)?;
+    let full = IconPaint {
+        opacity: 1.0,
+        ..paint.clone()
+    };
+    draw_direct(
+        &mut scratch,
+        sheet,
+        icon,
+        &full,
+        Anchor::TopLeft,
+        (0.0, 0.0),
+    );
+    Some(RenderedIcon {
+        width,
+        height,
+        rgba: scratch.data().to_vec(),
+    })
+}
+
+/// Blends a rendered icon onto the target. The buffer holds what [`blend`]
+/// wrote into a cleared pixmap -- straight colour, its own alpha -- so
+/// blending it again with that alpha reproduces the direct path.
+fn blit_rendered(
+    pixmap: &mut Pixmap,
+    rendered: &RenderedIcon,
+    opacity: f32,
+    anchor: Anchor,
+    at: (f32, f32),
+) {
+    let (ax, ay) = anchor.offset();
+    // The rendered buffer is one pixel larger than the drawn size; anchoring
+    // uses the drawn size so the icon lands where the direct path put it.
+    let w = (rendered.width - 1) as f32;
+    let h = (rendered.height - 1) as f32;
+    let x0 = (at.0 + w * ax).round() as i32;
+    let y0 = (at.1 + h * ay).round() as i32;
+    let pix_w = pixmap.width() as i32;
+    let pix_h = pixmap.height() as i32;
+
+    for my in 0..rendered.height {
+        let py = y0 + my;
+        if py < 0 || py >= pix_h {
+            continue;
+        }
+        for mx in 0..rendered.width {
+            let px = x0 + mx;
+            if px < 0 || px >= pix_w {
+                continue;
+            }
+            let index = ((my * rendered.width + mx) * 4) as usize;
+            let alpha = rendered.rgba[index + 3] as f32 / 255.0 * opacity;
+            if alpha <= 0.002 {
+                continue;
+            }
+            let color = Color {
+                r: rendered.rgba[index] as f32 / 255.0,
+                g: rendered.rgba[index + 1] as f32 / 255.0,
+                b: rendered.rgba[index + 2] as f32 / 255.0,
+                a: 1.0,
+            };
+            blend(pixmap, px, py, color, alpha);
         }
     }
 }

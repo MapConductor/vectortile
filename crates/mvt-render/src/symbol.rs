@@ -36,6 +36,16 @@ use crate::sprite::{self, IconPaint, SpriteSheet};
 use crate::style::{Layer, LayerKind, Style};
 use crate::text::{self, Anchor, GlyphOnLine, GlyphStore, Shaped, TextPaint};
 
+/// How much the road may turn between two adjacent letters, in degrees,
+/// before the label is dropped rather than drawn. MapLibre's
+/// `text-max-angle` default.
+const MAX_ANGLE_BETWEEN_GLYPHS: f32 = 45.0;
+
+/// How much the road may turn in total under one label, in degrees --
+/// MapLibre's `text-max-angle` default. A gentle arc is fine; past this the
+/// run starts folding over itself.
+const MAX_TURN_ACROSS_LABEL: f32 = 45.0;
+
 /// Below this, in the style's own pixels, a label is not read -- it is a
 /// smudge that still takes room from its neighbours and still costs a font
 /// range to fetch.
@@ -626,9 +636,46 @@ fn lay_along_line(
     }
 
     let mut out = Vec::with_capacity(shaped.glyphs.len());
+    let mut last_angle: Option<f32> = None;
+    // The label's turn so far, unwrapped, and the extremes it has reached.
+    let mut turned = 0.0f32;
+    let mut turn_min = 0.0f32;
+    let mut turn_max = 0.0f32;
     for glyph in &shaped.glyphs {
         let along = start + glyph.x * scale;
         let ((x, y), angle) = line.at(along)?;
+        // A bend under a label piles its letters onto each other, two ways. A
+        // hairpin does it between two adjacent letters; a long gentle curve
+        // does it by degrees, each step passing the adjacent check while the
+        // run folds back over itself -- which is how 新所原停車場堺の岡線 was
+        // drawn as a knot. Both are dropped rather than drawn garbled; the
+        // road simply goes unnamed here.
+        if let Some(last) = last_angle {
+            let step = normalise_degrees(angle - last);
+            if step.abs() > MAX_ANGLE_BETWEEN_GLYPHS {
+                return None;
+            }
+            turned += step;
+            turn_min = turn_min.min(turned);
+            turn_max = turn_max.max(turned);
+            if turn_max - turn_min > MAX_TURN_ACROSS_LABEL {
+                return None;
+            }
+        }
+        last_angle = Some(angle);
+        // The bend compresses the inside of the curve: pens keep their spacing
+        // measured along the road, but the straight-line distance between them
+        // shrinks -- the arc is longer than the chord -- and the letters pile
+        // up even where every angle check passes.
+        if let Some(prev) = out.last() {
+            let prev: &GlyphOnLine = prev;
+            let dx = x - prev.at.0;
+            let dy = y - prev.at.1;
+            let spacing = along - (start + shaped.glyphs[out.len() - 1].x * scale);
+            if spacing > 0.0 && dx.hypot(dy) < spacing * 0.8 {
+                return None;
+            }
+        }
         // The baseline sits below the line's own path, so the text reads as
         // sitting on the road rather than through it.
         let (sin, cos) = angle.to_radians().sin_cos();
@@ -1308,6 +1355,51 @@ mod tests {
         assert!(
             turned[1].at.1 > turned[0].at.1,
             "the run goes down the line"
+        );
+    }
+
+    /// A hairpin under a label piles its letters onto each other; better no
+    /// name here than a garbled one.
+    #[test]
+    fn drops_a_name_on_a_hairpin_bend() {
+        let store = store(&[0x41, 0x42]);
+        let shaped = text::shape("AB", &["F".to_string()], &store, f32::MAX);
+
+        // The line doubles back on itself right where the label would sit.
+        let hairpin =
+            PixelLine::new(vec![(0.0, 100.0), (24.0, 100.0), (0.0, 104.0)]).expect("a line");
+        assert!(
+            lay_along_line(&hairpin, &shaped, 28.0, 24.0, false).is_none(),
+            "a label across a 170-degree bend is unreadable"
+        );
+
+        // A gentle bend is fine.
+        let gentle =
+            PixelLine::new(vec![(0.0, 100.0), (24.0, 100.0), (48.0, 108.0)]).expect("a line");
+        assert!(lay_along_line(&gentle, &shaped, 24.0, 24.0, false).is_some());
+    }
+
+    /// A long gentle curve garbles a label by degrees: every adjacent pair of
+    /// letters clears the hairpin check while the run folds back on itself.
+    #[test]
+    fn drops_a_name_that_curls_around_a_long_bend() {
+        let store = store(&[0x41, 0x42]);
+        // Six glyphs, so the curve is sampled often enough that each step is
+        // gentle.
+        let shaped = text::shape("ABABAB", &["F".to_string()], &store, f32::MAX);
+
+        // A half-circle: each step turns 30 degrees, well under the adjacent
+        // limit, and the whole run turns 150.
+        let mut points = Vec::new();
+        for i in 0..=6 {
+            let angle = (i as f32) * 30.0f32.to_radians();
+            points.push((100.0 - angle.cos() * 40.0, 100.0 + angle.sin() * 40.0));
+        }
+        let arc = PixelLine::new(points).expect("a line");
+        let centre = arc.length() / 2.0;
+        assert!(
+            lay_along_line(&arc, &shaped, centre, 24.0, false).is_none(),
+            "a label around a half-circle overlaps itself"
         );
     }
 

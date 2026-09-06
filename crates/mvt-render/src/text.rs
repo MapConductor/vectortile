@@ -23,10 +23,48 @@ use crate::glyphs::{FontStack, Glyph, EDGE, GLYPH_SIZE, RANGE};
 /// A style names a stack per layer (`text-font`), and a stack is a list of
 /// faces tried in order — the first one holding a codepoint wins, which is how
 /// a Latin face and a CJK face cover a map between them.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct GlyphStore {
     faces: HashMap<String, HashMap<u32, Glyph>>,
+    /// Rendered coverage masks, so a glyph that appears on every tile is
+    /// thresholded from its distance field once rather than once per tile.
+    ///
+    /// Behind a mutex because tiles render in parallel over a shared,
+    /// otherwise read-only store; the lock is held for a lookup or an insert,
+    /// never while rendering.
+    masks: std::sync::Mutex<HashMap<MaskKey, std::sync::Arc<Mask>>>,
 }
+
+/// What makes two uses of a glyph the same drawing.
+///
+/// The floats are keyed by their bit patterns: sizes come from a style's zoom
+/// curve evaluated at whole zoom levels, so a handful of distinct values recur
+/// endlessly.
+#[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
+struct MaskKey {
+    code: u32,
+    /// Which face resolved the code, so two fonts sharing a codepoint do not
+    /// share a shape.
+    face: u64,
+    scale: u32,
+    threshold: u32,
+    gamma: u32,
+}
+
+/// A glyph's coverage at one drawn size: 0..255 per pixel. Colour is applied
+/// at blit time, so one mask serves every tint, and one more the halo.
+#[derive(Debug)]
+struct Mask {
+    width: i32,
+    height: i32,
+    alpha: Vec<u8>,
+}
+
+/// Masks kept before the cache empties itself. A style uses a handful of
+/// sizes per zoom and a few hundred distinct characters per city; the cap
+/// only stops a pathological style from growing without bound, and clearing
+/// everything beats an LRU -- the working set refills in one tile.
+const MASK_CACHE_CAP: usize = 8192;
 
 impl GlyphStore {
     pub fn new() -> Self {
@@ -43,6 +81,24 @@ impl GlyphStore {
 
     pub fn is_empty(&self) -> bool {
         self.faces.values().all(|f| f.is_empty())
+    }
+
+    /// The face that would resolve this code, as a stable identity for the
+    /// mask cache.
+    fn face_id(&self, fonts: &[String], code: u32) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let name = fonts
+            .iter()
+            .find(|name| {
+                self.faces
+                    .get(name.as_str())
+                    .is_some_and(|face| face.contains_key(&code))
+            })
+            .map(String::as_str)
+            .unwrap_or("");
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// The first face in `fonts` that has this codepoint.
@@ -302,6 +358,7 @@ pub fn draw(
         opacity: paint.opacity,
         halo: None,
         rotation: 0.0,
+        face: 0,
     };
     if paint.halo_width > 0.0 {
         let halo = Ink {
@@ -314,13 +371,21 @@ pub fn draw(
         };
         for placed in &shaped.glyphs {
             if let Some(glyph) = store.glyph(fonts, placed.code) {
-                blit(pixmap, glyph, placed, &halo);
+                let ink = Ink {
+                    face: store.face_id(fonts, placed.code),
+                    ..halo
+                };
+                blit_cached(pixmap, store, glyph, placed, &ink);
             }
         }
     }
     for placed in &shaped.glyphs {
         if let Some(glyph) = store.glyph(fonts, placed.code) {
-            blit(pixmap, glyph, placed, &fill);
+            let ink = Ink {
+                face: store.face_id(fonts, placed.code),
+                ..fill
+            };
+            blit_cached(pixmap, store, glyph, placed, &ink);
         }
     }
 }
@@ -354,6 +419,7 @@ pub fn draw_along_line(
     let scale = paint.size / GLYPH_SIZE;
 
     let ink_for = |glyph: &GlyphOnLine, halo: Option<Halo>| Ink {
+        face: 0,
         // Each glyph carries its own origin, so the pen is at zero.
         origin: glyph.at,
         scale,
@@ -418,6 +484,129 @@ struct Ink {
     /// Clockwise, about the pen position. Zero for a label laid out flat,
     /// which is every label that is not following a road.
     rotation: f32,
+    /// Which face resolved this glyph, for the mask cache.
+    face: u64,
+}
+
+/// The field threshold and softness an ink draws at.
+///
+/// Shared by the direct and the cached path, so the two cannot disagree about
+/// what a glyph looks like. Reading the field further out from the outline
+/// thickens the ink into a halo; `text-halo-blur` widens the band the edge
+/// fades over -- a halo is meant to fade rather than end.
+fn threshold_and_gamma(scale: f32, halo: Option<Halo>) -> (f32, f32) {
+    let edge = EDGE / 255.0;
+    let threshold = match halo {
+        Some(halo) => (RANGE - halo.width / scale) / (2.0 * RANGE) + edge - 0.5,
+        None => edge,
+    };
+    let blur = halo.map(|h| h.blur).unwrap_or(0.0).max(0.0);
+    let gamma = (0.105 / scale).max(0.001) + blur / (2.0 * RANGE * scale);
+    (threshold, gamma)
+}
+
+/// Thresholds a glyph's field into coverage at one drawn size.
+fn build_mask(glyph: &Glyph, scale: f32, threshold: f32, gamma: f32) -> Mask {
+    let bw = glyph.bitmap_width() as i32;
+    let bh = glyph.bitmap_height() as i32;
+    let width = (bw as f32 * scale).ceil() as i32 + 1;
+    let height = (bh as f32 * scale).ceil() as i32 + 1;
+    let mut alpha = vec![0u8; (width * height) as usize];
+    for my in 0..height {
+        for mx in 0..width {
+            let sx = (mx as f32 + 0.5) / scale;
+            let sy = (my as f32 + 0.5) / scale;
+            if sx >= bw as f32 || sy >= bh as f32 {
+                continue;
+            }
+            let distance = sample(&glyph.bitmap, bw, bh, sx, sy);
+            let coverage = smoothstep(threshold - gamma, threshold + gamma, distance);
+            alpha[(my * width + mx) as usize] = (coverage * 255.0 + 0.5) as u8;
+        }
+    }
+    Mask {
+        width,
+        height,
+        alpha,
+    }
+}
+
+/// As [`blit`], but through the store's mask cache when the glyph is drawn
+/// unrotated -- which is every glyph of every point label.
+///
+/// A glyph's coverage at a given size never changes, and thresholding it out
+/// of the distance field -- a bilinear sample and a smoothstep per pixel --
+/// was repeated for the same glyph on every tile it appeared on.
+fn blit_cached(
+    pixmap: &mut Pixmap,
+    store: &GlyphStore,
+    glyph: &Glyph,
+    placed: &PlacedGlyph,
+    ink: &Ink,
+) {
+    if ink.rotation != 0.0 {
+        blit(pixmap, glyph, placed, ink);
+        return;
+    }
+    if glyph.bitmap.is_empty() {
+        return;
+    }
+    let (threshold, gamma) = threshold_and_gamma(ink.scale, ink.halo);
+    let key = MaskKey {
+        code: glyph.id,
+        face: ink.face,
+        scale: ink.scale.to_bits(),
+        threshold: threshold.to_bits(),
+        gamma: gamma.to_bits(),
+    };
+    let cached = store.masks.lock().ok().and_then(|m| m.get(&key).cloned());
+    let mask = match cached {
+        Some(mask) => mask,
+        None => {
+            let mask = std::sync::Arc::new(build_mask(glyph, ink.scale, threshold, gamma));
+            if let Ok(mut masks) = store.masks.lock() {
+                if masks.len() >= MASK_CACHE_CAP {
+                    masks.clear();
+                }
+                masks.insert(key, mask.clone());
+            }
+            mask
+        }
+    };
+
+    // The mask's origin sits on a whole pixel; drawing it at a fractional one
+    // would need the resample the mask is here to remove. Rounding moves the
+    // glyph under half a pixel -- a quarter of a style pixel on the doubled
+    // overlay.
+    let buffer = crate::glyphs::BUFFER as f32;
+    let x0 = (ink.origin.0 + (placed.x + glyph.left as f32 - buffer) * ink.scale).round() as i32;
+    let y0 = (ink.origin.1 + (placed.y - glyph.top as f32 - buffer) * ink.scale).round() as i32;
+    let pix_w = pixmap.width() as i32;
+    let pix_h = pixmap.height() as i32;
+    let base_alpha = ink.opacity * ink.color.a;
+
+    for my in 0..mask.height {
+        let py = y0 + my;
+        if py < 0 || py >= pix_h {
+            continue;
+        }
+        let row = (my * mask.width) as usize;
+        for mx in 0..mask.width {
+            let coverage = mask.alpha[row + mx as usize];
+            if coverage == 0 {
+                continue;
+            }
+            let px = x0 + mx;
+            if px < 0 || px >= pix_w {
+                continue;
+            }
+            let alpha = coverage as f32 / 255.0 * base_alpha;
+            if alpha <= 0.002 {
+                continue;
+            }
+            blend(pixmap, px, py, ink.color, alpha);
+        }
+    }
 }
 
 fn blit(pixmap: &mut Pixmap, glyph: &Glyph, placed: &PlacedGlyph, ink: &Ink) {
@@ -428,6 +617,7 @@ fn blit(pixmap: &mut Pixmap, glyph: &Glyph, placed: &PlacedGlyph, ink: &Ink) {
         opacity,
         halo,
         rotation,
+        ..
     } = *ink;
     if glyph.bitmap.is_empty() {
         return;
@@ -441,19 +631,7 @@ fn blit(pixmap: &mut Pixmap, glyph: &Glyph, placed: &PlacedGlyph, ink: &Ink) {
     let x0 = origin_x + (placed.x + glyph.left as f32 - buffer) * scale;
     let y0 = origin_y + (placed.y - glyph.top as f32 - buffer) * scale;
 
-    let edge = EDGE / 255.0;
-    let threshold = match halo {
-        // Reading the field further out from the outline thickens the ink;
-        // how much further is the halo width, in the field's own units.
-        Some(halo) => (RANGE - halo.width / scale) / (2.0 * RANGE) + edge - 0.5,
-        None => edge,
-    };
-    // One target pixel spans this much of the field, which is the width the
-    // edge is allowed to be soft over. `text-halo-blur` asks for more than
-    // that: a halo is meant to fade rather than end, and the style says over
-    // how many pixels.
-    let blur = halo.map(|h| h.blur).unwrap_or(0.0).max(0.0);
-    let gamma = (0.105 / scale).max(0.001) + blur / (2.0 * RANGE * scale);
+    let (threshold, gamma) = threshold_and_gamma(scale, halo);
 
     let dest_w = bw as f32 * scale;
     let dest_h = bh as f32 * scale;
