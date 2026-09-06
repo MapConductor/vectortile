@@ -4,7 +4,9 @@
 //! and iOS with no platform 2D API and no C toolchain involved. That is what
 //! makes "identical output on every backend" achievable.
 
-use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{
+    FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform,
+};
 
 use crate::color::Color;
 use crate::expr::Ctx;
@@ -48,6 +50,38 @@ pub fn render(
 /// pixels is unreadable rather than blended, so every label is collected,
 /// tested against the ones already kept, and only then drawn. See
 /// [`crate::symbol`].
+/// Icon images cut out of the sheet, kept for the length of one tile.
+///
+/// A patterned layer asks for the same icon on every feature it draws, and
+/// cutting it out of the sheet each time is pure repetition.
+struct PatternCache<'a> {
+    sheet: Option<&'a crate::sprite::SpriteSheet>,
+    cut: std::collections::HashMap<String, Option<(Pixmap, f32)>>,
+}
+
+impl<'a> PatternCache<'a> {
+    fn new(sheet: Option<&'a crate::sprite::SpriteSheet>) -> Self {
+        PatternCache {
+            sheet,
+            cut: std::collections::HashMap::new(),
+        }
+    }
+
+    /// The icon's pixels and the pixel ratio they were drawn for.
+    fn get(&mut self, name: &str) -> Option<&(Pixmap, f32)> {
+        let sheet = self.sheet?;
+        self.cut
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                let ratio = sheet.icon(name).map(|i| i.pixel_ratio).unwrap_or(1.0);
+                sheet
+                    .icon_image(name)
+                    .map(|image| (image, if ratio > 0.0 { ratio } else { 1.0 }))
+            })
+            .as_ref()
+    }
+}
+
 pub fn render_with_glyphs(
     style: &Style,
     zoom: f64,
@@ -62,6 +96,7 @@ pub fn render_with_glyphs(
         layers_drawn: 0,
         features_drawn: 0,
     };
+    let mut patterns = PatternCache::new(sprites);
 
     for layer in &style.layers {
         if !layer.kind.is_drawable() || !layer.is_visible() || !layer.applies_at(zoom) {
@@ -95,6 +130,7 @@ pub fn render_with_glyphs(
             &transform,
             zoom,
             paint_scale,
+            &mut patterns,
         );
         if drawn > 0 {
             stats.layers_drawn += 1;
@@ -105,7 +141,15 @@ pub fn render_with_glyphs(
     // Either is enough on its own: a POI layer with only `icon-image` draws
     // without a single glyph, and a place-name layer draws without a sheet.
     if !glyphs.is_empty() || sprites.is_some_and(|sheet| !sheet.is_empty()) {
-        let labels = symbol::collect(style, zoom, tile_size, paint_scale, decoded, glyphs, sprites);
+        let labels = symbol::collect(
+            style,
+            zoom,
+            tile_size,
+            paint_scale,
+            decoded,
+            glyphs,
+            sprites,
+        );
         // Two pixels of padding: labels that only just clear each other read
         // as one smear at small sizes.
         let placed = symbol::place(labels);
@@ -155,6 +199,7 @@ fn draw_data_layer(
     transform: &Transform,
     zoom: f64,
     paint_scale: f32,
+    patterns: &mut PatternCache<'_>,
 ) -> usize {
     let mut drawn = 0;
 
@@ -177,7 +222,15 @@ fn draw_data_layer(
         };
 
         let painted = match layer.kind {
-            LayerKind::Fill => draw_fill(pixmap, layer, feature, transform, &ctx, paint_scale),
+            LayerKind::Fill => draw_fill(
+                pixmap,
+                layer,
+                feature,
+                transform,
+                &ctx,
+                paint_scale,
+                patterns,
+            ),
             LayerKind::Line => draw_line(pixmap, layer, feature, transform, &ctx, paint_scale),
             LayerKind::Circle => draw_circle(pixmap, layer, feature, transform, &ctx, paint_scale),
             _ => false,
@@ -238,6 +291,7 @@ fn draw_fill(
     transform: &Transform,
     ctx: &Ctx,
     paint_scale: f32,
+    patterns: &mut PatternCache<'_>,
 ) -> bool {
     if feature.geom_type != GeomType::Polygon {
         return false;
@@ -252,7 +306,48 @@ fn draw_fill(
         .with_opacity(opacity);
 
     let mut painted = false;
-    if fill.a > 0.0 {
+    // `fill-pattern` wins over `fill-color`: a style that names both means the
+    // colour as the fallback for a sheet that has not arrived.
+    let pattern = layer
+        .paint_value("fill-pattern", ctx)
+        .and_then(|v| match v {
+            crate::expr::Val::Str(name) => Some(name),
+            _ => None,
+        })
+        .and_then(|name| patterns.get(&name));
+
+    if let Some(image) = pattern {
+        // The pattern is drawn at the sprite's own size, scaled the way
+        // everything else on this tile is.
+        let k = paint_scale / image.1;
+        let paint = Paint {
+            shader: tiny_skia::Pattern::new(
+                image.0.as_ref(),
+                tiny_skia::SpreadMode::Repeat,
+                // Nearest keeps a hatch crisp when it is drawn at its own size
+                // or larger. Shrunk, nearest picks the same source pixel every
+                // time -- a two-pixel stripe halved comes out a flat white --
+                // so a downscale averages instead.
+                if k < 1.0 {
+                    tiny_skia::FilterQuality::Bilinear
+                } else {
+                    tiny_skia::FilterQuality::Nearest
+                },
+                opacity.clamp(0.0, 1.0),
+                Transform::from_scale(k, k),
+            ),
+            anti_alias: true,
+            ..Paint::default()
+        };
+        pixmap.fill_path(
+            &path,
+            &paint,
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+        painted = true;
+    } else if fill.a > 0.0 {
         pixmap.fill_path(
             &path,
             &solid_paint(fill),
@@ -335,7 +430,16 @@ fn draw_line(
             .layout_value("line-miter-limit", ctx)
             .and_then(|v| v.as_f64())
             .unwrap_or(2.0) as f32,
-        ..Stroke::default()
+        // `line-dasharray` counts in line widths, not pixels, so a tunnel
+        // casing keeps its proportions as the road thickens with zoom.
+        dash: layer
+            .paint_numbers("line-dasharray", ctx)
+            .map(|pattern| crate::dash::normalise(&pattern))
+            .filter(|pattern| !pattern.is_empty())
+            .and_then(|pattern| {
+                let scaled: Vec<f32> = pattern.iter().map(|v| v * width).collect();
+                StrokeDash::new(scaled, 0.0)
+            }),
     };
 
     pixmap.stroke_path(

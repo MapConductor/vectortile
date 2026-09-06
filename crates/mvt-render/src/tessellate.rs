@@ -162,6 +162,18 @@ pub fn tessellate(
             || layer.paint_varies_per_feature("circle-radius");
 
         let mut cached: Option<(Color, f32)> = None;
+        // The pattern is in line widths, and the widths here are in extent
+        // units, so the scaling falls out of the width the feature resolves
+        // to. Read once per layer: a per-feature dash array is legal and
+        // nobody writes one.
+        let dash_pattern = if layer.kind == LayerKind::Line {
+            layer
+                .paint_numbers("line-dasharray", &Ctx::zoom_only(zoom))
+                .map(|pattern| crate::dash::normalise(&pattern))
+                .filter(|pattern| !pattern.is_empty())
+        } else {
+            None
+        };
 
         for feature in &data.features {
             if !filter.matches(data, feature) {
@@ -251,7 +263,15 @@ pub fn tessellate(
                         continue;
                     }
                     let started = std::time::Instant::now();
-                    line_feature(feature, tile, unify, size, color, &mut out.vertices);
+                    line_feature(
+                        feature,
+                        tile,
+                        unify,
+                        size,
+                        color,
+                        dash_pattern.as_deref(),
+                        &mut out.vertices,
+                    );
                     out.stats.line_ms += started.elapsed().as_secs_f32() * 1000.0;
                 }
                 LayerKind::Circle => {
@@ -388,6 +408,7 @@ fn line_feature(
     unify: f32,
     half_width: f32,
     color: Color,
+    dash_pattern: Option<&[f32]>,
     out: &mut Vec<f32>,
 ) {
     let extent = 4096.0_f32;
@@ -400,41 +421,55 @@ fn line_feature(
             .map(|p| project(*p, tile, unify, extent))
             .collect();
 
-        for window in points.windows(2) {
-            let (a, b) = (window[0], window[1]);
-            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-            let length = (dx * dx + dy * dy).sqrt();
-            if length <= f32::EPSILON {
-                continue;
+        // Dashing here rather than in the shader: the GPU draws whatever
+        // quads it is handed, so a dashed line is simply fewer of them. The
+        // pattern's lengths are multiples of the line's width, and the width
+        // is a half-width in extent units, hence the doubling.
+        let runs: Vec<Vec<[f32; 2]>> = match dash_pattern {
+            Some(pattern) if half_width > 0.0 => {
+                let scaled: Vec<f32> = pattern.iter().map(|v| v * half_width * 2.0).collect();
+                crate::dash::dashed(&points, &scaled)
             }
-            // Perpendicular offset; two triangles per segment.
-            let (nx, ny) = (-dy / length * half_width, dx / length * half_width);
-            let p0 = [a[0] + nx, a[1] + ny];
-            let p1 = [a[0] - nx, a[1] - ny];
-            let p2 = [b[0] + nx, b[1] + ny];
-            let p3 = [b[0] - nx, b[1] - ny];
-            for point in [p0, p1, p2, p1, p3, p2] {
-                push_vertex(out, point[0], point[1], color);
-            }
-        }
+            _ => vec![points],
+        };
 
-        // Bevel joins: one triangle per interior vertex. Without them a thick
-        // polyline shows a notch at every bend.
-        for i in 1..points.len().saturating_sub(1) {
-            let (prev, here, next) = (points[i - 1], points[i], points[i + 1]);
-            let d0 = normalise([here[0] - prev[0], here[1] - prev[1]]);
-            let d1 = normalise([next[0] - here[0], next[1] - here[1]]);
-            let n0 = [-d0[1] * half_width, d0[0] * half_width];
-            let n1 = [-d1[1] * half_width, d1[0] * half_width];
-            for point in [
-                here,
-                [here[0] + n0[0], here[1] + n0[1]],
-                [here[0] + n1[0], here[1] + n1[1]],
-                here,
-                [here[0] - n0[0], here[1] - n0[1]],
-                [here[0] - n1[0], here[1] - n1[1]],
-            ] {
-                push_vertex(out, point[0], point[1], color);
+        for points in runs {
+            for window in points.windows(2) {
+                let (a, b) = (window[0], window[1]);
+                let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+                let length = (dx * dx + dy * dy).sqrt();
+                if length <= f32::EPSILON {
+                    continue;
+                }
+                // Perpendicular offset; two triangles per segment.
+                let (nx, ny) = (-dy / length * half_width, dx / length * half_width);
+                let p0 = [a[0] + nx, a[1] + ny];
+                let p1 = [a[0] - nx, a[1] - ny];
+                let p2 = [b[0] + nx, b[1] + ny];
+                let p3 = [b[0] - nx, b[1] - ny];
+                for point in [p0, p1, p2, p1, p3, p2] {
+                    push_vertex(out, point[0], point[1], color);
+                }
+            }
+
+            // Bevel joins: one triangle per interior vertex. Without them a thick
+            // polyline shows a notch at every bend.
+            for i in 1..points.len().saturating_sub(1) {
+                let (prev, here, next) = (points[i - 1], points[i], points[i + 1]);
+                let d0 = normalise([here[0] - prev[0], here[1] - prev[1]]);
+                let d1 = normalise([next[0] - here[0], next[1] - here[1]]);
+                let n0 = [-d0[1] * half_width, d0[0] * half_width];
+                let n1 = [-d1[1] * half_width, d1[0] * half_width];
+                for point in [
+                    here,
+                    [here[0] + n0[0], here[1] + n0[1]],
+                    [here[0] + n1[0], here[1] + n1[1]],
+                    here,
+                    [here[0] - n0[0], here[1] - n0[1]],
+                    [here[0] - n1[0], here[1] - n1[1]],
+                ] {
+                    push_vertex(out, point[0], point[1], color);
+                }
             }
         }
     }
@@ -608,6 +643,39 @@ mod tests {
         let result = tessellate(&style, 10.0, 512, &decoded(&tile));
         // Two segments (2 triangles each) plus one bevel join (2 triangles).
         assert_eq!(result.triangle_count(), 6);
+    }
+
+    /// The GPU path draws the quads it is handed, so a dashed line has to be
+    /// dashed here rather than in a shader -- and a tunnel drawn solid reads
+    /// as an ordinary road.
+    #[test]
+    fn a_dashed_line_becomes_several_runs_of_quads() {
+        let solid = style_with(json!({
+            "id": "l", "type": "line", "source": "src", "source-layer": "road",
+            "paint": { "line-color": "#000000", "line-width": 4 }
+        }));
+        let dashed = style_with(json!({
+            "id": "l", "type": "line", "source": "src", "source-layer": "road",
+            "paint": {
+                "line-color": "#000000", "line-width": 4,
+                "line-dasharray": [1, 1]
+            }
+        }));
+        // A straight line across the whole tile: 4096 extent units, drawn 4
+        // pixels wide at 512, so a dash is 4 pixels and there is room for
+        // plenty of them.
+        let tile = tile_with(
+            "road",
+            GeomType::LineString,
+            vec![vec![[0.0, 0.0], [4096.0, 0.0]]],
+        );
+
+        let whole = tessellate(&solid, 10.0, 512, &decoded(&tile));
+        let cut = tessellate(&dashed, 10.0, 512, &decoded(&tile));
+
+        assert_eq!(whole.triangle_count(), 2, "one segment, one quad");
+        // 512 pixels of line, 4 on and 4 off: 64 dashes, two triangles each.
+        assert_eq!(cut.triangle_count(), 128);
     }
 
     #[test]

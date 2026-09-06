@@ -101,12 +101,9 @@ impl SpriteSheet {
                 continue;
             };
             let number = |key: &str| entry.get(key).and_then(Json::as_f64);
-            let (Some(x), Some(y), Some(width), Some(height)) = (
-                number("x"),
-                number("y"),
-                number("width"),
-                number("height"),
-            ) else {
+            let (Some(x), Some(y), Some(width), Some(height)) =
+                (number("x"), number("y"), number("width"), number("height"))
+            else {
                 continue;
             };
             if width <= 0.0 || height <= 0.0 || x < 0.0 || y < 0.0 {
@@ -118,10 +115,7 @@ impl SpriteSheet {
                 width: width as u32,
                 height: height as u32,
                 pixel_ratio: number("pixelRatio").unwrap_or(1.0) as f32,
-                sdf: entry
-                    .get("sdf")
-                    .and_then(Json::as_bool)
-                    .unwrap_or(false),
+                sdf: entry.get("sdf").and_then(Json::as_bool).unwrap_or(false),
                 content: entry.get("content").and_then(read_box),
                 stretch_x: read_bands(entry.get("stretchX")),
                 stretch_y: read_bands(entry.get("stretchY")),
@@ -159,6 +153,25 @@ impl SpriteSheet {
         } else {
             None
         }
+    }
+
+    /// A copy of one icon's pixels, on its own.
+    ///
+    /// `fill-pattern` tiles an icon across a polygon, and a shader can only
+    /// repeat a whole image -- repeating the sheet would paper the polygon
+    /// with every other icon in the style.
+    pub fn icon_image(&self, name: &str) -> Option<Pixmap> {
+        let icon = self.icon(name)?;
+        let mut out = Pixmap::new(icon.width, icon.height)?;
+        let source = self.image.pixels();
+        let target = out.pixels_mut();
+        for row in 0..icon.height {
+            let from = ((icon.y + row) * self.image.width() + icon.x) as usize;
+            let to = (row * icon.width) as usize;
+            target[to..to + icon.width as usize]
+                .copy_from_slice(&source[from..from + icon.width as usize]);
+        }
+        Some(out)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -308,10 +321,7 @@ fn map_axis(pieces: &[Piece], d: f32) -> f32 {
             return piece.src + t * piece.src_len;
         }
     }
-    pieces
-        .last()
-        .map(|p| p.src + p.src_len)
-        .unwrap_or(0.0)
+    pieces.last().map(|p| p.src + p.src_len).unwrap_or(0.0)
 }
 
 /// Target pixels per icon pixel, before any stretching.

@@ -149,6 +149,21 @@ impl Layer {
             .unwrap_or(default)
     }
 
+    /// A paint property that is a list of numbers, such as `line-dasharray`.
+    pub fn paint_numbers(&self, key: &str, ctx: &Ctx) -> Option<Vec<f32>> {
+        match self.paint_value(key, ctx)? {
+            Val::Arr(items) => {
+                let numbers: Vec<f32> = items
+                    .iter()
+                    .filter_map(|v| v.as_f64())
+                    .map(|v| v as f32)
+                    .collect();
+                (numbers.len() == items.len() && !numbers.is_empty()).then_some(numbers)
+            }
+            _ => None,
+        }
+    }
+
     pub fn paint_color(&self, key: &str, ctx: &Ctx, default: Color) -> Color {
         self.paint_value(key, ctx)
             .and_then(|v| v.as_color())
@@ -487,8 +502,8 @@ mod tests {
         assert_eq!(listed.sprite.as_deref(), Some("https://example.com/basics"));
         assert_eq!(listed.sprite_id.as_deref(), Some("basics"));
 
-        let none = Style::parse(r##"{"version": 8, "sources": {}, "layers": []}"##)
-            .expect("parses");
+        let none =
+            Style::parse(r##"{"version": 8, "sources": {}, "layers": []}"##).expect("parses");
         assert_eq!(none.sprite, None);
     }
 

@@ -461,6 +461,62 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeSpr
 }
 
 #[no_mangle]
+/// Whether a tile at this zoom has to be drawn on the CPU, because the style
+/// paints something the GPU path cannot -- today, a patterned fill.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNeedsCpu(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    z: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+) -> jint {
+    guarded(&mut env, 0, |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return 0;
+        };
+        let data_bytes = match env.convert_byte_array(&data) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad tile data: {error}"));
+                return 0;
+            }
+        };
+        let count = match env.get_array_length(&lengths) {
+            Ok(value) => value as usize,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+                return 0;
+            }
+        };
+        let mut length_table = vec![0i32; count];
+        if let Err(error) = env.get_int_array_region(&lengths, 0, &mut length_table) {
+            throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+            return 0;
+        }
+
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(count);
+        let mut offset = 0usize;
+        for length in &length_table {
+            if *length <= 0 {
+                slices.push(None);
+                continue;
+            }
+            let length = *length as usize;
+            if offset + length > data_bytes.len() {
+                slices.push(None);
+                continue;
+            }
+            slices.push(Some(&data_bytes[offset..offset + length]));
+            offset += length;
+        }
+
+        jint::from(renderer.needs_cpu(z.clamp(0, 30) as u8, &slices))
+    })
+}
+
+#[no_mangle]
 /// Whether the style names a sprite the renderer has not been given yet.
 pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNeedsSprite(
     mut env: JNIEnv,

@@ -35,6 +35,7 @@
 //! draws at all: raster, hillshade, fill-extrusion.
 
 pub mod color;
+pub mod dash;
 pub mod expr;
 pub mod filter;
 pub mod glyphs;
@@ -42,8 +43,8 @@ pub mod mercator;
 pub mod model;
 pub mod mvt;
 pub mod raster;
-pub mod style;
 pub mod sprite;
+pub mod style;
 pub mod symbol;
 #[cfg(feature = "tessellate")]
 pub mod tessellate;
@@ -136,6 +137,14 @@ impl GlyphRequest {
     }
 }
 
+/// Whether `needle` appears anywhere in `haystack`.
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return false;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// Where a style's sprite sheet lives: an index and the image it indexes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpriteRequest {
@@ -192,6 +201,45 @@ impl Renderer {
             .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
         *slot = Some(sheet);
         Ok(count)
+    }
+
+    /// Whether this tile has to be rasterised on the CPU.
+    ///
+    /// The GPU path draws flat-coloured triangles, and a patterned fill needs
+    /// an image repeated across the polygon, so a tile that has one is drawn
+    /// the slower way rather than drawn wrong.
+    ///
+    /// It is answered from the tile and not from the style alone, because the
+    /// style alone answers "yes" far too often: the sample basemap paints
+    /// prisons, building sites and danger areas with a pattern and puts no
+    /// minzoom on any of them, so every tile at every zoom would have taken
+    /// the slow path for three layers that appear on almost none of them.
+    ///
+    /// The test is whether the tile carries the layer at all, and it is made
+    /// by looking for the layer's name in the undecoded bytes -- a name that
+    /// happens to appear as a property value costs that one tile the slower
+    /// path, which is a better trade than decoding every tile twice to find
+    /// out.
+    pub fn needs_cpu(&self, z: u8, tile_data: &[Option<&[u8]>]) -> bool {
+        let zoom = z as f64;
+        self.style
+            .layers
+            .iter()
+            .filter(|layer| {
+                layer.is_visible()
+                    && layer.applies_at(zoom)
+                    && (layer.paint.contains_key("fill-pattern")
+                        || layer.paint.contains_key("line-pattern"))
+            })
+            .any(|layer| {
+                let Some(name) = layer.source_layer.as_deref() else {
+                    return false;
+                };
+                tile_data
+                    .iter()
+                    .flatten()
+                    .any(|bytes| contains(bytes, name.as_bytes()))
+            })
     }
 
     pub fn has_sprite(&self) -> bool {
@@ -827,6 +875,112 @@ mod tests {
             .map(|r| r.range_start)
             .collect();
         assert_eq!(ranges, vec![78 * 256]);
+    }
+
+    /// A patterned fill has to be drawn with an image repeated across it,
+    /// which the flat-coloured GPU path cannot do -- so the tile says so.
+    #[test]
+    fn asks_for_the_cpu_only_where_a_pattern_is_painted() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sprite": "https://example.com/sprite",
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [
+                { "id": "plain", "type": "fill", "source": "src", "source-layer": "a",
+                  "paint": { "fill-color": "#ffffff" } },
+                { "id": "hatched", "type": "fill", "source": "src", "source-layer": "b",
+                  "minzoom": 12,
+                  "paint": { "fill-pattern": "hatch" } }
+            ]
+        }))
+        .unwrap();
+        let renderer = Renderer::from_style(style);
+
+        let with_pattern_data = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "b".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Polygon,
+                points: vec![(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+                props: vec![],
+            }],
+        }]);
+        let without = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "a".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Polygon,
+                points: vec![(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
+                props: vec![],
+            }],
+        }]);
+
+        assert!(
+            !renderer.needs_cpu(10, &[Some(&with_pattern_data)]),
+            "the pattern layer is not on at this zoom"
+        );
+        assert!(
+            renderer.needs_cpu(13, &[Some(&with_pattern_data)]),
+            "the tile carries the layer the pattern paints"
+        );
+        assert!(
+            !renderer.needs_cpu(13, &[Some(&without)]),
+            "no such layer in this tile, so no reason to be slow"
+        );
+    }
+
+    /// A patterned fill draws the sheet's icon rather than the flat colour
+    /// underneath it.
+    #[test]
+    fn fills_a_polygon_with_the_pattern_it_names() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sprite": "https://example.com/sprite",
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [
+                { "id": "bg", "type": "background", "paint": { "background-color": "#ffffff" } },
+                { "id": "site", "type": "fill", "source": "src", "source-layer": "poly",
+                  "paint": { "fill-color": "#ffffff", "fill-pattern": "hatch" } }
+            ]
+        }))
+        .unwrap();
+        let renderer = Renderer::from_style(style);
+
+        // A two-pixel pattern: one red, one white.
+        let mut sheet = tiny_skia::Pixmap::new(2, 1).expect("pixmap");
+        sheet.pixels_mut()[0] = tiny_skia::ColorU8::from_rgba(255, 0, 0, 255).premultiply();
+        sheet.pixels_mut()[1] = tiny_skia::ColorU8::from_rgba(255, 255, 255, 255).premultiply();
+        renderer
+            .add_sprite(
+                r#"{"hatch": {"x": 0, "y": 0, "width": 2, "height": 1, "pixelRatio": 1}}"#,
+                &sheet.encode_png().expect("encode"),
+            )
+            .expect("sheet loads");
+
+        let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "poly".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Polygon,
+                points: vec![(0, 0), (4096, 0), (4096, 4096), (0, 4096), (0, 0)],
+                props: vec![],
+            }],
+        }]);
+
+        // At 512 the pattern draws at its own size, so the stripes are whole
+        // pixels rather than an average of two.
+        let (pixmap, _) = renderer
+            .render_pixmap(10, 512, 300, 512, &[Some(&tile)])
+            .expect("renders");
+        let red = pixmap
+            .pixels()
+            .iter()
+            .filter(|p| p.red() > 200 && p.green() < 60)
+            .count();
+        assert!(
+            red > 1000,
+            "expected the pattern's red stripes, got {red} pixels"
+        );
     }
 
     /// The sprite pair is derived from one URL, and a style that asks for a
