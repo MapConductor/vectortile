@@ -824,13 +824,24 @@ fn to_pixels(
 pub fn place(labels: Vec<Label>) -> Vec<Label> {
     let mut labels = drop_repeats(labels);
     // Within a layer, the order the style asked for; between layers, the
-    // style's own order, which is why this is stable and keyed on both. A
-    // collision is decided by whoever is placed first, so this is the whole
-    // of what `symbol-sort-key` does.
+    // style's own order. A collision is decided by whoever is placed first,
+    // so this ordering is the whole of what `symbol-sort-key` does.
+    //
+    // The world-position tail is not a tie-break nicety. Neighbouring tiles
+    // run this same contest over almost the same labels, and a label that
+    // straddles their seam is drawn half by each -- so both must reach the
+    // same verdict. With the tie broken by insertion order, the order tiles
+    // happen to decode their neighbours in decided winners, and 環七北通り
+    // lost in the south tile after winning in the north: its bottom half
+    // simply never existed. Keyed on where a label is in the world, every
+    // tile ranks the shared contestants identically.
     labels.sort_by(|a, b| {
         a.layer_index
             .cmp(&b.layer_index)
             .then(a.sort_key.total_cmp(&b.sort_key))
+            .then(a.world_at.1.cmp(&b.world_at.1))
+            .then(a.world_at.0.cmp(&b.world_at.0))
+            .then(a.content.cmp(&b.content))
     });
     let mut kept: Vec<Label> = Vec::new();
     for mut label in labels {
@@ -895,44 +906,53 @@ const REPEAT_DISTANCE: f64 = 512.0;
 /// have each tile keep a different copy and draw it, which is the duplicate
 /// this is meant to remove.
 fn drop_repeats(labels: Vec<Label>) -> Vec<Label> {
-    let mut winners: Vec<(usize, (i64, i64))> = Vec::new();
-    let mut dropped = vec![false; labels.len()];
+    use std::collections::HashMap;
 
-    for (index, label) in labels.iter().enumerate() {
+    // One winner per (name, world cell), where the cells are a grid fixed in
+    // world space. The obvious rule -- one winner per cluster of nearby
+    // copies -- is what this replaces, and the reason is the seam: two tiles
+    // see slightly different candidate sets (each looks one tile around
+    // itself), so a far-off copy visible to only one of them could steal the
+    // cluster's win there, and a label straddling their seam was then drawn
+    // by one side only -- 環七通り lost its 環. A fixed grid decides each
+    // cell from the candidates inside that cell alone, which neighbouring
+    // tiles agree on.
+    //
+    // The price is a cluster that straddles a cell edge keeping one copy on
+    // each side. Copies of one feature sit tens of pixels apart -- clip
+    // offsets -- so that is rare, and a name twice at a distance reads far
+    // better than a name half-drawn.
+    let cell = |label: &Label| {
+        (
+            label.world_at.0.div_euclid(REPEAT_DISTANCE as i64),
+            label.world_at.1.div_euclid(REPEAT_DISTANCE as i64),
+        )
+    };
+
+    let mut winner: HashMap<(String, (i64, i64)), (i64, i64)> = HashMap::new();
+    for label in &labels {
         if label.content.is_empty() {
             continue;
         }
-        let mut replaced = None;
-        for (other, at) in winners.iter_mut() {
-            if labels[*other].content != label.content {
-                continue;
-            }
-            let dx = (at.0 - label.world_at.0) as f64;
-            let dy = (at.1 - label.world_at.1) as f64;
-            if dx.hypot(dy) > REPEAT_DISTANCE {
-                continue;
-            }
-            if label.world_at < *at {
-                dropped[*other] = true;
-                *other = index;
-                *at = label.world_at;
-            } else {
-                replaced = Some(());
-            }
-            break;
-        }
-        if replaced.is_some() {
-            dropped[index] = true;
-        } else if !dropped[index] && !winners.iter().any(|(i, _)| *i == index) {
-            winners.push((index, label.world_at));
-        }
+        let key = (label.content.clone(), cell(label));
+        winner
+            .entry(key)
+            .and_modify(|best| {
+                if label.world_at < *best {
+                    *best = label.world_at;
+                }
+            })
+            .or_insert(label.world_at);
     }
 
     labels
         .into_iter()
-        .enumerate()
-        .filter(|(index, _)| !dropped[*index])
-        .map(|(_, label)| label)
+        .filter(|label| {
+            if label.content.is_empty() {
+                return true;
+            }
+            winner[&(label.content.clone(), cell(label))] == label.world_at
+        })
         .collect()
 }
 
@@ -1589,11 +1609,12 @@ mod tests {
             l
         };
 
-        // Tile A sees its own copy at world 5000 and the neighbour's at 5300.
-        let from_a = place(vec![here(100.0, (5000, 100)), here(400.0, (5300, 100))]);
+        // Tile A sees its own copy at world 5000 and the neighbour's at 5080
+        // -- copies of one feature sit tens of pixels apart, clip offsets.
+        let from_a = place(vec![here(100.0, (5000, 100)), here(180.0, (5080, 100))]);
         // Tile B sees the same two, in the other order and shifted into its
         // own pixels.
-        let from_b = place(vec![here(-100.0, (5300, 100)), here(-400.0, (5000, 100))]);
+        let from_b = place(vec![here(-100.0, (5080, 100)), here(-180.0, (5000, 100))]);
 
         assert_eq!(from_a.len(), 1);
         assert_eq!(from_b.len(), 1);
@@ -2088,6 +2109,69 @@ mod tests {
             label(0.0, 0.0, 50.0, 20.0, true),
         ]);
         assert_eq!(kept.len(), 2);
+    }
+
+    /// Two tiles sharing a seam run the same contest over almost the same
+    /// labels, and a label straddling the seam is drawn half by each -- so
+    /// the contest must not depend on the order the contestants arrived in.
+    #[test]
+    fn placement_does_not_depend_on_arrival_order() {
+        let entry = |name: &str, x: f32, world: (i64, i64)| {
+            let mut l = label(x, 100.0, 60.0, 20.0, false);
+            l.content = name.into();
+            l.world_at = world;
+            l
+        };
+        // Two labels contesting one spot, offered in both orders, as two
+        // neighbouring tiles would see them.
+        let north = place(vec![
+            entry("環七北通り", 100.0, (9000, 5000)),
+            entry("六町", 110.0, (9010, 4990)),
+        ]);
+        let south = place(vec![
+            entry("六町", 110.0, (9010, 4990)),
+            entry("環七北通り", 100.0, (9000, 5000)),
+        ]);
+
+        assert_eq!(north.len(), 1);
+        assert_eq!(south.len(), 1);
+        assert_eq!(
+            north[0].content, south[0].content,
+            "the two tiles kept different labels, so each draws half of its own"
+        );
+    }
+
+    /// A label that runs off one tile is drawn by both, each its own half --
+    /// but only if both tiles agree it should be drawn at all. They see
+    /// slightly different candidates (each looks one tile around itself), so
+    /// the contest must not depend on which candidates turned up: the loser
+    /// on one side leaves a name with its bottom half missing.
+    #[test]
+    fn a_label_crossing_a_seam_survives_on_both_sides() {
+        let straddler = || {
+            let mut l = label(200.0, 500.0, 60.0, 20.0, false);
+            l.content = "平方東京線".into();
+            l.world_at = (200, 500);
+            l
+        };
+        let rival = |x: f32, world: (i64, i64), name: &str| {
+            let mut l = label(x, 495.0, 60.0, 20.0, false);
+            l.content = name.into();
+            l.world_at = world;
+            l
+        };
+
+        // The upper tile sees the straddler and one rival; the lower tile sees
+        // the straddler and a different one, from further down.
+        let upper = place(vec![straddler(), rival(210.0, (210, 495), "北")]);
+        let lower = place(vec![rival(210.0, (210, 495), "北"), straddler()]);
+
+        let kept = |labels: &[Label]| labels.iter().any(|l| l.content == "平方東京線");
+        assert_eq!(
+            kept(&upper),
+            kept(&lower),
+            "one tile drew the label and the other did not, so it is half-drawn"
+        );
     }
 
     /// Padding is the label's own now, because a line of arrows and a pair of

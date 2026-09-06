@@ -13,7 +13,9 @@ fn main() {
     for entry in std::fs::read_dir(&glyph_dir).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().and_then(|e| e.to_str()) == Some("pbf") {
-            renderer.add_glyphs(&std::fs::read(&path).unwrap()).ok();
+            if let Err(error) = renderer.add_glyphs(&std::fs::read(&path).unwrap()) {
+                eprintln!("GLYPHFAIL {} {error}", path.display());
+            }
         }
     }
 
@@ -45,10 +47,8 @@ fn main() {
     }
     let report = renderer.label_report(z, x, y, 512, &refs);
     println!("LABELS total {}", report.len());
-    let mut ranked: Vec<_> = report.iter().filter(|(_, _, k)| *k != 0.0).collect();
-    ranked.sort_by(|a, b| a.2.total_cmp(&b.2));
-    for (content, _, key) in ranked.iter().take(8) {
-        println!("  RANKED {content} sort-key {key}");
+    for (content, bounds, _) in report.iter() {
+        println!("  PLACED {content} {bounds:?}");
     }
 
     let started = std::time::Instant::now();

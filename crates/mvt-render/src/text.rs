@@ -994,6 +994,48 @@ mod tests {
         );
     }
 
+    /// Every letter of a run laid along a line has to be drawn, including the
+    /// first: a road name missing its first character reads as a different
+    /// road.
+    #[test]
+    fn draws_every_glyph_of_a_line_label() {
+        let (store, fonts) = store_with(vec![solid(65, 8, 8, 10), solid(66, 8, 8, 10)]);
+        let paint = TextPaint {
+            size: 24.0,
+            color: Color::new(0.0, 0.0, 0.0, 1.0),
+            halo_color: Color::new(1.0, 1.0, 1.0, 1.0),
+            halo_width: 1.0,
+            halo_blur: 0.0,
+            opacity: 1.0,
+        };
+        // Four pens along a slightly tilted line, as a road label would be.
+        let glyphs: Vec<GlyphOnLine> = (0..4)
+            .map(|i| GlyphOnLine {
+                code: if i % 2 == 0 { 65 } else { 66 },
+                at: (30.0 + i as f32 * 24.0, 60.0 + i as f32 * 1.0),
+                angle: 2.0,
+            })
+            .collect();
+
+        let mut pixmap = Pixmap::new(160, 120).unwrap();
+        draw_along_line(&mut pixmap, &glyphs, &store, &fonts, &paint);
+
+        for (index, glyph) in glyphs.iter().enumerate() {
+            // Ink somewhere in the box the glyph occupies: it sits above its
+            // pen, which is the baseline.
+            let ink = (0..160)
+                .flat_map(|x| (0..120).map(move |y| (x, y)))
+                .filter(|(x, y)| {
+                    (*x as f32 - glyph.at.0).abs() < 12.0
+                        && (glyph.at.1 - *y as f32) > 0.0
+                        && (glyph.at.1 - *y as f32) < 12.0
+                })
+                .filter(|(x, y)| pixmap.data()[((y * 160 + x) * 4 + 3) as usize] > 40)
+                .count();
+            assert!(ink > 0, "glyph {index} of the run was not drawn");
+        }
+    }
+
     /// The halo has to reach outside the ink, or it is not a halo.
     #[test]
     fn the_halo_reaches_past_the_ink() {
