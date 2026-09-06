@@ -44,18 +44,13 @@ fn main() {
         println!("NEEDS {}", want.url(&template));
     }
     let report = renderer.label_report(z, x, y, 512, &refs);
-    let straddling: Vec<_> = report
-        .iter()
-        .filter(|(_, b)| b[0] < 0.0 || b[1] < 0.0 || b[2] > 512.0 || b[3] > 512.0)
-        .collect();
-    println!(
-        "LABELS total {} straddling an edge {}",
-        report.len(),
-        straddling.len()
-    );
-    for (content, bounds) in straddling.iter().take(8) {
-        println!("  EDGE {content} {bounds:?}");
+    println!("LABELS total {}", report.len());
+    let mut ranked: Vec<_> = report.iter().filter(|(_, _, k)| *k != 0.0).collect();
+    ranked.sort_by(|a, b| a.2.total_cmp(&b.2));
+    for (content, _, key) in ranked.iter().take(8) {
+        println!("  RANKED {content} sort-key {key}");
     }
+
     let started = std::time::Instant::now();
     for _ in 0..5 {
         renderer.render(z, x, y, 512, &refs).unwrap();

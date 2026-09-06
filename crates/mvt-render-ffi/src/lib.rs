@@ -120,7 +120,10 @@ pub unsafe extern "C" fn mvt_renderer_set_style(
     }
     let result = catch_unwind(AssertUnwindSafe(|| {
         let Some(style) = borrow_str(style_json) else {
-            return Err((MVT_ERR_BAD_ARGUMENT, "style_json is null or not valid UTF-8".to_string()));
+            return Err((
+                MVT_ERR_BAD_ARGUMENT,
+                "style_json is null or not valid UTF-8".to_string(),
+            ));
         };
         (*handle)
             .inner
@@ -396,7 +399,6 @@ pub unsafe extern "C" fn mvt_renderer_tessellate(
         Err(_) => MVT_ERR_PANIC,
     }
 }
-
 
 /// Releases a float buffer returned by [`mvt_renderer_tessellate`].
 ///

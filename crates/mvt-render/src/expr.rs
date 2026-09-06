@@ -218,9 +218,11 @@ fn eval_array(items: &[Json], ctx: &Ctx) -> Val {
                 .map(|k| ctx.property(k) == Val::Null)
                 .unwrap_or(false),
         ),
+        // Each argument in turn until one is a number, which is what the
+        // fallback in `["to-number", ["get", "population"], 0]` is for.
         "to-number" => Val::Num(
-            args.first()
-                .and_then(|a| eval(a, ctx).as_f64())
+            args.iter()
+                .find_map(|a| eval(a, ctx).as_f64())
                 .unwrap_or(0.0),
         ),
         "to-boolean" => Val::Bool(args.first().map(|a| eval(a, ctx).truthy()).unwrap_or(false)),

@@ -255,6 +255,10 @@ pub struct TextPaint {
     pub halo_color: Color,
     /// Halo width in target pixels.
     pub halo_width: f32,
+    /// `text-halo-blur`: how far the halo fades out past its own edge, in the
+    /// style's pixels. A hard-edged halo reads as an outline drawn around the
+    /// letter; a blurred one reads as the letter sitting on something.
+    pub halo_blur: f32,
     pub opacity: f32,
 }
 
@@ -303,7 +307,10 @@ pub fn draw(
                     scale,
                     paint.halo_color,
                     paint.opacity,
-                    Some(paint.halo_width),
+                    Some(Halo {
+                        width: paint.halo_width,
+                        blur: paint.halo_blur,
+                    }),
                 );
             }
         }
@@ -331,6 +338,14 @@ pub fn draw(
 /// against a threshold, and a narrow band either side of it becomes the
 /// antialiased edge. Widening the threshold instead of the ink is what makes a
 /// halo — the same field, read at a different depth.
+///
+/// How wide the halo is, and how far it fades out past its own edge.
+#[derive(Debug, Clone, Copy)]
+struct Halo {
+    width: f32,
+    blur: f32,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn blit(
     pixmap: &mut Pixmap,
@@ -341,7 +356,7 @@ fn blit(
     scale: f32,
     color: Color,
     opacity: f32,
-    halo_width: Option<f32>,
+    halo: Option<Halo>,
 ) {
     if glyph.bitmap.is_empty() {
         return;
@@ -356,15 +371,18 @@ fn blit(
     let y0 = origin_y + (placed.y - glyph.top as f32 - buffer) * scale;
 
     let edge = EDGE / 255.0;
-    let threshold = match halo_width {
+    let threshold = match halo {
         // Reading the field further out from the outline thickens the ink;
         // how much further is the halo width, in the field's own units.
-        Some(width) => (RANGE - width / scale) / (2.0 * RANGE) + edge - 0.5,
+        Some(halo) => (RANGE - halo.width / scale) / (2.0 * RANGE) + edge - 0.5,
         None => edge,
     };
     // One target pixel spans this much of the field, which is the width the
-    // edge is allowed to be soft over.
-    let gamma = (0.105 / scale).max(0.001);
+    // edge is allowed to be soft over. `text-halo-blur` asks for more than
+    // that: a halo is meant to fade rather than end, and the style says over
+    // how many pixels.
+    let blur = halo.map(|h| h.blur).unwrap_or(0.0).max(0.0);
+    let gamma = (0.105 / scale).max(0.001) + blur / (2.0 * RANGE * scale);
 
     let dest_w = (bw as f32 * scale).ceil() as i32;
     let dest_h = (bh as f32 * scale).ceil() as i32;
@@ -587,6 +605,7 @@ mod tests {
             color: Color::new(0.0, 0.0, 0.0, 1.0),
             halo_color: Color::new(1.0, 1.0, 1.0, 1.0),
             halo_width: 0.0,
+            halo_blur: 0.0,
             opacity: 1.0,
         };
         let centre = bounds(&shaped, &paint, Anchor::Center, (100.0, 100.0));
@@ -605,6 +624,7 @@ mod tests {
             color: Color::new(0.0, 0.0, 0.0, 1.0),
             halo_color: Color::new(1.0, 1.0, 1.0, 1.0),
             halo_width: 0.0,
+            halo_blur: 0.0,
             opacity: 1.0,
         };
         let mut pixmap = Pixmap::new(64, 64).unwrap();
@@ -623,6 +643,75 @@ mod tests {
         assert_eq!(alpha_at(2, 2), 0, "the far corner is untouched");
     }
 
+    /// A blurred halo fades out instead of ending, which is what
+    /// `text-halo-blur` asks for -- 30 of the sample style's layers do.
+    #[test]
+    fn blur_softens_the_halos_edge() {
+        let (store, fonts) = store_with(vec![solid(65, 8, 8, 10)]);
+        let shaped = shape("A", &fonts, &store, 100.0);
+        let base = TextPaint {
+            size: 24.0,
+            color: Color::new(0.0, 0.0, 0.0, 0.0),
+            halo_color: Color::new(1.0, 0.0, 0.0, 1.0),
+            halo_width: 2.0,
+            halo_blur: 0.0,
+            opacity: 1.0,
+        };
+        let ring = |paint: &TextPaint, from: f32, to: f32| {
+            let mut pixmap = Pixmap::new(64, 64).unwrap();
+            draw(
+                &mut pixmap,
+                &shaped,
+                &store,
+                &fonts,
+                paint,
+                Anchor::Center,
+                (32.0, 32.0),
+            );
+            (0..64)
+                .flat_map(|y| (0..64).map(move |x| (x, y)))
+                .filter(|(x, y)| {
+                    let dx = *x as f32 - 32.0;
+                    let dy = *y as f32 - 32.0;
+                    let d = (dx * dx + dy * dy).sqrt();
+                    (from..to).contains(&d)
+                })
+                .map(|(x, y)| pixmap.data()[((y * 64 + x) * 4 + 3) as usize] as u32)
+                .sum::<u32>()
+        };
+
+        // A halo either ends or fades. Counting the pixels caught mid-fade
+        // is what tells the two apart -- it cannot reach further than the
+        // field it is read from, which stops a few pixels past the ink.
+        let half_lit = |paint: &TextPaint| {
+            let mut pixmap = Pixmap::new(64, 64).unwrap();
+            draw(
+                &mut pixmap,
+                &shaped,
+                &store,
+                &fonts,
+                paint,
+                Anchor::Center,
+                (32.0, 32.0),
+            );
+            pixmap
+                .data()
+                .chunks(4)
+                .filter(|p| (20..235).contains(&p[3]))
+                .count()
+        };
+
+        let hard = half_lit(&base);
+        let soft = half_lit(&TextPaint {
+            halo_blur: 3.0,
+            ..base
+        });
+        assert!(
+            soft > hard + hard / 4,
+            "expected the blurred halo to fade over more of its edge: hard {hard}, blurred {soft}"
+        );
+    }
+
     /// The halo has to reach outside the ink, or it is not a halo.
     #[test]
     fn the_halo_reaches_past_the_ink() {
@@ -633,6 +722,7 @@ mod tests {
             color: Color::new(0.0, 0.0, 0.0, 1.0),
             halo_color: Color::new(1.0, 0.0, 0.0, 1.0),
             halo_width: 0.0,
+            halo_blur: 0.0,
             opacity: 1.0,
         };
         let alpha_ring = |paint: &TextPaint| {
@@ -662,6 +752,7 @@ mod tests {
         let without = alpha_ring(&base);
         let with = alpha_ring(&TextPaint {
             halo_width: 2.0,
+            halo_blur: 0.0,
             ..base
         });
         assert!(

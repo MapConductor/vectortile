@@ -577,7 +577,7 @@ impl Renderer {
         y: u32,
         tile_size: u32,
         tile_data: &[Option<&[u8]>],
-    ) -> Vec<(String, [f32; 4])> {
+    ) -> Vec<(String, [f32; 4], f64)> {
         let Ok(store) = self.glyphs.read() else {
             return Vec::new();
         };
@@ -601,7 +601,7 @@ impl Renderer {
         );
         symbol::place(labels)
             .into_iter()
-            .map(|label| (label.content, label.bounds))
+            .map(|label| (label.content, label.bounds, label.sort_key))
             .collect()
     }
 

@@ -34,7 +34,9 @@ pub extern "system" fn Java_com_mapconductor_core_tileserver_TilePngEncoder_nati
         if width <= 0 || height <= 0 {
             return None;
         }
-        let expected = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
+        let expected = (width as usize)
+            .checked_mul(height as usize)?
+            .checked_mul(4)?;
 
         let address = env.get_direct_buffer_address(&buffer).ok()?;
         let capacity = env.get_direct_buffer_capacity(&buffer).ok()?;

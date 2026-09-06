@@ -81,8 +81,7 @@ fn main() {
                 .map(|_| {
                     let mut scratch = tile.clone();
                     let started = Instant::now();
-                    let png =
-                        tile_png::encode_png_premultiplied(size, size, &mut scratch).unwrap();
+                    let png = tile_png::encode_png_premultiplied(size, size, &mut scratch).unwrap();
                     let elapsed = started.elapsed().as_secs_f64() * 1000.0;
                     std::hint::black_box(png);
                     elapsed

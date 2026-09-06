@@ -166,6 +166,9 @@ mod premultiply_tests {
         );
         assert_eq!(decoded.pixel(1, 0).unwrap().alpha(), 0);
         let opaque = decoded.pixel(2, 0).unwrap().demultiply();
-        assert_eq!((opaque.red(), opaque.green(), opaque.blue()), (200, 100, 50));
+        assert_eq!(
+            (opaque.red(), opaque.green(), opaque.blue()),
+            (200, 100, 50)
+        );
     }
 }

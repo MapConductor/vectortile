@@ -138,7 +138,9 @@ impl VectorTileRenderer {
     ) -> Result<bool, JsError> {
         let tiles: Vec<String> = serde_json::from_str(tiles_json)
             .map_err(|e| JsError::new(&format!("tiles must be a JSON string array: {e}")))?;
-        Ok(self.inner.set_source_tiles(source_id, tiles, minzoom, maxzoom))
+        Ok(self
+            .inner
+            .set_source_tiles(source_id, tiles, minzoom, maxzoom))
     }
 
     /// Reasons the current style may not render as intended, as a JSON array

@@ -101,6 +101,11 @@ pub struct Label {
     /// tile. Together they identify the same name arriving twice.
     pub content: String,
     pub world_at: (i64, i64),
+    /// Which style layer produced this, and what `symbol-sort-key` said about
+    /// it. Placement runs in this order, so the style decides which label
+    /// wins a collision rather than whichever the tile happened to list first.
+    pub layer_index: usize,
+    pub sort_key: f64,
     /// Room to keep clear around it, from `text-padding` or `icon-padding`.
     /// Per label rather than per pass: arrows repeated along a road are meant
     /// to sit closer together than two place names ever should.
@@ -252,7 +257,7 @@ pub fn collect(
         return labels;
     }
 
-    for layer in &style.layers {
+    for (layer_index, layer) in style.layers.iter().enumerate() {
         if layer.kind != LayerKind::Symbol || !layer.is_visible() || !layer.applies_at(zoom) {
             continue;
         }
@@ -359,6 +364,8 @@ pub fn collect(
                         halo_color: layer.paint_color("text-halo-color", &ctx, Color::TRANSPARENT),
                         halo_width: layer.paint_number("text-halo-width", &ctx, 0.0) as f32
                             * paint_scale,
+                        halo_blur: layer.paint_number("text-halo-blur", &ctx, 0.0) as f32
+                            * paint_scale,
                         opacity,
                     };
 
@@ -433,6 +440,12 @@ pub fn collect(
                     };
 
                     labels.push(Label {
+                        layer_index,
+                        // The style's own idea of which of its labels matters
+                        // most. Lower goes first, which is why a style that
+                        // wants the biggest place first negates the
+                        // population.
+                        sort_key: layer.layout_number("symbol-sort-key", &ctx, 0.0),
                         content: content.unwrap_or_default(),
                         world_at: (
                             (origin.0 + at.0 as f64).round() as i64,
@@ -572,7 +585,16 @@ fn to_pixels(
 /// collision: the boxes include the halo's bleed, and text that nearly
 /// overlaps reads worse than text that is missing.
 pub fn place(labels: Vec<Label>) -> Vec<Label> {
-    let labels = drop_repeats(labels);
+    let mut labels = drop_repeats(labels);
+    // Within a layer, the order the style asked for; between layers, the
+    // style's own order, which is why this is stable and keyed on both. A
+    // collision is decided by whoever is placed first, so this is the whole
+    // of what `symbol-sort-key` does.
+    labels.sort_by(|a, b| {
+        a.layer_index
+            .cmp(&b.layer_index)
+            .then(a.sort_key.total_cmp(&b.sort_key))
+    });
     let mut kept: Vec<Label> = Vec::new();
     for mut label in labels {
         if label.allow_overlap {
@@ -1067,6 +1089,49 @@ mod tests {
         let mut s = GlyphStore::new();
         s.insert(stack);
         s
+    }
+
+    /// `symbol-sort-key` is the style saying which of its own labels matters
+    /// most. Without it, a collision is settled by whichever the tile happened
+    /// to list first -- so a village can take the place of a city.
+    #[test]
+    fn places_in_the_order_the_style_asked_for() {
+        let entry = |x: f32, name: &str, key: f64| {
+            let mut l = label(x, 100.0, 60.0, 20.0, false);
+            l.content = name.into();
+            l.world_at = (x as i64, 100);
+            l.sort_key = key;
+            l
+        };
+
+        // Two labels on the same spot. The village is listed first and the
+        // city second, so first-come would keep the village.
+        let kept = place(vec![entry(100.0, "村", -10.0), entry(110.0, "市", -1000.0)]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].content, "市", "the style's own order was ignored");
+    }
+
+    /// Between layers it is still the style's layer order that decides; the
+    /// sort key only orders a layer's own labels.
+    #[test]
+    fn a_sort_key_does_not_reorder_the_layers() {
+        let entry = |x: f32, name: &str, layer: usize, key: f64| {
+            let mut l = label(x, 100.0, 60.0, 20.0, false);
+            l.content = name.into();
+            l.world_at = (x as i64, 100);
+            l.layer_index = layer;
+            l.sort_key = key;
+            l
+        };
+
+        // The later layer has the lower key, and still loses: a style puts
+        // what matters lower down the list on purpose.
+        let kept = place(vec![
+            entry(100.0, "first-layer", 3, 100.0),
+            entry(110.0, "later-layer", 9, -100.0),
+        ]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].content, "first-layer");
     }
 
     /// A name anchored just inside one tile spills across the seam, and the
@@ -1591,6 +1656,7 @@ mod tests {
                 color: Color::BLACK,
                 halo_color: Color::TRANSPARENT,
                 halo_width: 0.0,
+                halo_blur: 0.0,
                 opacity: 1.0,
             },
             anchor: Anchor::Center,
@@ -1603,6 +1669,8 @@ mod tests {
             text_optional: false,
             content: String::new(),
             world_at: (x as i64, y as i64),
+            layer_index: 0,
+            sort_key: 0.0,
             padding: 0.0,
             allow_overlap,
         }
