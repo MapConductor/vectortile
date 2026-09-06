@@ -14,8 +14,10 @@
 //!
 //! # What is not
 //!
-//! Text along a line (`symbol-placement: line`), icons (`icon-image`, which
-//! needs the style's sprite sheet), and `text-letter-spacing`.
+//! Text along a line (`symbol-placement: line`) and `text-letter-spacing`.
+//! Icons are drawn -- see [`crate::sprite`] -- but only where the sheet has
+//! them and only at point placement, so the arrows a style repeats along a
+//! road are still missing.
 //! [`unsupported`] names what a given style loses, the same way the renderer
 //! reports undrawn layer types.
 //!
@@ -30,10 +32,25 @@ use crate::color::Color;
 use crate::expr::Ctx;
 use crate::filter::CompiledFilter;
 use crate::model::{self, GeomType};
+use crate::sprite::{self, IconPaint, SpriteSheet};
 use crate::style::{Layer, LayerKind, Style};
 use crate::text::{self, Anchor, GlyphStore, Shaped, TextPaint};
 
+/// An icon that has been positioned but not yet drawn.
+pub struct IconPlacement {
+    /// Name in the sheet. Kept rather than resolved so the sheet stays
+    /// borrowed for as little as possible.
+    pub name: String,
+    pub paint: IconPaint,
+    pub anchor: Anchor,
+    pub at: (f32, f32),
+}
+
 /// A label that has been shaped and positioned but not yet drawn.
+///
+/// Text and icon travel together because a style that gives a POI both means
+/// them as one thing: dropping the pin and keeping its name, or the other way
+/// round, is worse than dropping both.
 pub struct Label {
     pub shaped: Shaped,
     pub fonts: Vec<String>,
@@ -41,7 +58,9 @@ pub struct Label {
     pub anchor: Anchor,
     /// Where the anchor sits on the target tile, in pixels.
     pub at: (f32, f32),
-    /// Axis-aligned box the label will cover, for collision.
+    pub icon: Option<IconPlacement>,
+    /// Axis-aligned box the label will cover, for collision. Covers both the
+    /// text and the icon when there are both.
     pub bounds: [f32; 4],
     pub allow_overlap: bool,
 }
@@ -58,9 +77,6 @@ pub fn unsupported(style: &Style, zoom: f64) -> Vec<String> {
             if placement != "point" {
                 reasons.push(format!("{}: symbol-placement {}", layer.id, placement));
             }
-        }
-        if layer.layout.contains_key("icon-image") {
-            reasons.push(format!("{}: icon-image", layer.id));
         }
     }
     reasons
@@ -153,9 +169,13 @@ pub fn collect(
     paint_scale: f32,
     decoded: &[crate::raster::DecodedTile],
     store: &GlyphStore,
+    sprites: Option<&SpriteSheet>,
 ) -> Vec<Label> {
     let mut labels = Vec::new();
-    if store.is_empty() {
+    // Nothing to draw labels *with*. A style whose symbols are all icons can
+    // still draw them, which is why this is not a test of the glyph store
+    // alone.
+    if store.is_empty() && sprites.map_or(true, SpriteSheet::is_empty) {
         return labels;
     }
 
@@ -202,26 +222,30 @@ pub fn collect(
                 layer: Some(data_layer),
                 feature: Some(feature),
             };
-            let Some(raw) = text_field(layer, &ctx) else {
-                continue;
-            };
-            let content = transform_case(&raw, layer.layout_string("text-transform", &ctx));
-            if content.trim().is_empty() {
-                continue;
-            }
             let Some(anchor_point) =
                 anchor_point(feature, decoded_tile, data_layer.extent, tile_size)
             else {
                 continue;
             };
 
+            let icon = icon_placement(layer, &ctx, sprites, paint_scale, anchor_point);
+
+            let content = text_field(layer, &ctx)
+                .map(|raw| transform_case(&raw, layer.layout_string("text-transform", &ctx)))
+                .filter(|content| !content.trim().is_empty());
+
             let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
-            if size <= 0.0 {
-                continue;
-            }
-            let max_width = layer.layout_number("text-max-width", &ctx, 10.0) as f32;
-            let shaped = text::shape(&content, &fonts, store, max_width);
-            if shaped.is_empty() {
+            let shaped = match &content {
+                Some(content) if size > 0.0 => {
+                    let max_width = layer.layout_number("text-max-width", &ctx, 10.0) as f32;
+                    text::shape(content, &fonts, store, max_width)
+                }
+                _ => Shaped::default(),
+            };
+            // A symbol with neither its glyphs nor its icon yet is not a
+            // label; it would reserve space for nothing and push its
+            // neighbours out of the way.
+            if shaped.is_empty() && icon.is_none() {
                 continue;
             }
 
@@ -241,22 +265,44 @@ pub fn collect(
                 halo_width: layer.paint_number("text-halo-width", &ctx, 0.0) as f32 * paint_scale,
                 opacity,
             };
-            if opacity <= 0.0 {
+            if opacity <= 0.0 && icon.is_none() {
                 continue;
             }
 
-            let bounds = text::bounds(&shaped, &paint, anchor, at);
+            let text_bounds = if shaped.is_empty() {
+                None
+            } else {
+                Some(text::bounds(&shaped, &paint, anchor, at))
+            };
+            let icon_bounds = icon.as_ref().and_then(|placement| {
+                sprites
+                    .and_then(|sheet| sheet.icon(&placement.name))
+                    .map(|icon| {
+                        sprite::bounds(icon, &placement.paint, placement.anchor, placement.at)
+                    })
+            });
+            let Some(bounds) = union(text_bounds, icon_bounds) else {
+                continue;
+            };
+
+            let allow_overlap = layer
+                .layout_value("text-allow-overlap", &ctx)
+                .map(|v| v.truthy())
+                .unwrap_or(false)
+                || layer
+                    .layout_value("icon-allow-overlap", &ctx)
+                    .map(|v| v.truthy())
+                    .unwrap_or(false);
+
             labels.push(Label {
                 shaped,
                 fonts: fonts.clone(),
                 paint,
                 anchor,
                 at,
+                icon,
                 bounds,
-                allow_overlap: layer
-                    .layout_value("text-allow-overlap", &ctx)
-                    .map(|v| v.truthy())
-                    .unwrap_or(false),
+                allow_overlap,
             });
         }
     }
@@ -289,8 +335,30 @@ pub fn place(labels: Vec<Label>, padding: f32) -> Vec<Label> {
     kept
 }
 
-pub fn draw(pixmap: &mut Pixmap, labels: &[Label], store: &GlyphStore) {
+pub fn draw(
+    pixmap: &mut Pixmap,
+    labels: &[Label],
+    store: &GlyphStore,
+    sprites: Option<&SpriteSheet>,
+) {
     for label in labels {
+        // Icon first: a style that puts a name on a pin means the name to be
+        // readable over it.
+        if let (Some(placement), Some(sheet)) = (&label.icon, sprites) {
+            if let Some(icon) = sheet.icon(&placement.name) {
+                sprite::draw(
+                    pixmap,
+                    sheet,
+                    icon,
+                    &placement.paint,
+                    placement.anchor,
+                    placement.at,
+                );
+            }
+        }
+        if label.shaped.is_empty() {
+            continue;
+        }
         text::draw(
             pixmap,
             &label.shaped,
@@ -337,6 +405,75 @@ fn font_stack(layer: &Layer, ctx: &Ctx) -> Vec<String> {
 /// Every basemap style in the wild still uses tokens — `{name}`, `{name:latin}`
 /// — so an implementation that only evaluated expressions would render a map
 /// with no labels at all and no error to explain it.
+/// Reads a symbol's icon, if the style names one and the sheet has it.
+///
+/// A name the sheet does not carry is not an error worth failing a tile over:
+/// styles routinely name icons per feature class and ship a sheet that covers
+/// most of them, so a miss draws nothing and the label's text still stands.
+fn icon_placement(
+    layer: &Layer,
+    ctx: &Ctx,
+    sprites: Option<&SpriteSheet>,
+    paint_scale: f32,
+    anchor_point: (f32, f32),
+) -> Option<IconPlacement> {
+    let sheet = sprites?;
+    let raw = layer.layout.get("icon-image")?;
+    let name = match raw.as_str() {
+        Some(template) => expand_tokens(template, ctx),
+        None => layer.layout_string("icon-image", ctx)?,
+    };
+    if name.is_empty() {
+        return None;
+    }
+    // Checked here rather than at draw time so a name the sheet does not have
+    // reserves no room in the collision pass.
+    sheet.icon(&name)?;
+
+    let size = layer.layout_number("icon-size", ctx, 1.0) as f32;
+    if size <= 0.0 {
+        return None;
+    }
+    let opacity = layer.paint_number("icon-opacity", ctx, 1.0) as f32;
+    if opacity <= 0.0 {
+        return None;
+    }
+
+    // `icon-offset` is in the icon's own pixels, so it grows with icon-size
+    // and with the tile's scale, exactly as the icon does.
+    let (ox, oy) = offset_of(layer, "icon-offset");
+    let scale = size * paint_scale;
+    Some(IconPlacement {
+        name,
+        paint: IconPaint {
+            scale,
+            opacity,
+            color: layer.paint_color("icon-color", ctx, Color::BLACK),
+            halo_color: layer.paint_color("icon-halo-color", ctx, Color::TRANSPARENT),
+            halo_width: layer.paint_number("icon-halo-width", ctx, 0.0) as f32,
+        },
+        anchor: layer
+            .layout_string("icon-anchor", ctx)
+            .map(|a| Anchor::from_str(&a))
+            .unwrap_or(Anchor::Center),
+        at: (anchor_point.0 + ox * scale, anchor_point.1 + oy * scale),
+    })
+}
+
+/// The box covering both, or whichever one there is.
+fn union(a: Option<[f32; 4]>, b: Option<[f32; 4]>) -> Option<[f32; 4]> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some([
+            a[0].min(b[0]),
+            a[1].min(b[1]),
+            a[2].max(b[2]),
+            a[3].max(b[3]),
+        ]),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
+}
+
 fn text_field(layer: &Layer, ctx: &Ctx) -> Option<String> {
     let raw = layer.layout.get("text-field")?;
     if let Some(template) = raw.as_str() {
@@ -376,9 +513,13 @@ fn transform_case(text: &str, transform: Option<String>) -> String {
 }
 
 fn layout_offset(layer: &Layer, _ctx: &Ctx) -> (f32, f32) {
+    offset_of(layer, "text-offset")
+}
+
+fn offset_of(layer: &Layer, key: &str) -> (f32, f32) {
     layer
         .layout
-        .get("text-offset")
+        .get(key)
         .and_then(|v| v.as_array())
         .map(|items| {
             let n = |i: usize| items.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
@@ -473,6 +614,78 @@ mod tests {
         s
     }
 
+    /// A pin and its name are one thing. Keeping the name after the pin lost
+    /// its place leaves a label floating over nothing.
+    #[test]
+    fn an_icon_and_its_text_are_placed_as_one() {
+        use crate::sprite::SpriteSheet;
+
+        let mut sheet_image = Pixmap::new(8, 8).expect("pixmap");
+        for slot in sheet_image.pixels_mut().iter_mut() {
+            *slot = tiny_skia::ColorU8::from_rgba(0, 0, 0, 255).premultiply();
+        }
+        let sheet = SpriteSheet::parse(
+            r#"{"pin": {"x": 0, "y": 0, "width": 8, "height": 8, "pixelRatio": 1}}"#,
+            &sheet_image.encode_png().expect("encode"),
+        )
+        .expect("sheet");
+
+        let style = Style::parse(
+            r##"{
+                "version": 8,
+                "sources": { "src": { "type": "vector" } },
+                "layers": [{
+                    "id": "pois", "type": "symbol", "source": "src", "source-layer": "poi",
+                    "layout": {
+                        "icon-image": "pin", "text-field": "{name}",
+                        "text-font": ["F"], "text-size": 10
+                    }
+                }]
+            }"##,
+        )
+        .expect("style parses");
+
+        // Two symbols close enough to collide: the second must lose both
+        // halves, not keep its name after its pin was dropped.
+        let bytes = encode_tile(&[LayerSpec {
+            name: "poi".into(),
+            extent: 4096,
+            features: vec![
+                FeatureSpec {
+                    geom: Geom::Point,
+                    points: vec![(2048, 2048)],
+                    props: vec![("name".into(), "A".into())],
+                },
+                FeatureSpec {
+                    geom: Geom::Point,
+                    points: vec![(2060, 2060)],
+                    props: vec![("name".into(), "A".into())],
+                },
+            ],
+        }]);
+        let decoded = vec![crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile: crate::mvt::decode(&bytes).expect("fixture decodes"),
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }];
+
+        let labels = collect(&style, 12.0, 512, 1.0, &decoded, &store(&[0x41]), Some(&sheet));
+        assert_eq!(labels.len(), 2, "both were collected");
+        assert!(labels[0].icon.is_some(), "the icon travels with the label");
+        // The box has to cover the icon, not just the text, or two pins would
+        // be allowed to sit on top of each other.
+        assert!(
+            labels[0].bounds[2] - labels[0].bounds[0] >= 8.0,
+            "expected the icon in the collision box, got {:?}",
+            labels[0].bounds
+        );
+
+        let placed = place(labels, 2.0);
+        assert_eq!(placed.len(), 1, "the second symbol collided and was dropped");
+    }
+
     fn label(x: f32, y: f32, w: f32, h: f32, allow_overlap: bool) -> Label {
         Label {
             shaped: Shaped::default(),
@@ -486,6 +699,7 @@ mod tests {
             },
             anchor: Anchor::Center,
             at: (x, y),
+            icon: None,
             bounds: [x, y, x + w, y + h],
             allow_overlap,
         }
@@ -579,7 +793,7 @@ mod tests {
             offset_y: 0.0,
         }];
 
-        let labels = collect(&style, 12.0, 512, 1.0, &decoded, &store);
+        let labels = collect(&style, 12.0, 512, 1.0, &decoded, &store, None);
         assert_eq!(labels.len(), 1);
         // The point sits at half the 4096 extent, so the middle of the tile.
         assert!((labels[0].at.0 - 256.0).abs() < 1.0);
@@ -602,7 +816,7 @@ mod tests {
             }"##,
         )
         .unwrap();
-        let labels = collect(&style, 12.0, 512, 1.0, &[], &GlyphStore::new());
+        let labels = collect(&style, 12.0, 512, 1.0, &[], &GlyphStore::new(), None);
         assert!(labels.is_empty());
     }
 }

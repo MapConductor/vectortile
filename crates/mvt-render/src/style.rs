@@ -184,6 +184,17 @@ pub struct Style {
     /// renderer that reached the network would not compile for wasm the same
     /// way it does for Android.
     pub glyphs: Option<String>,
+    /// The style's `sprite` URL, without the `.json` or `.png` suffix.
+    ///
+    /// A style may instead list several sheets as `[{id, url}, ...]`; only the
+    /// first is taken, because an icon name in a multi-sheet style is prefixed
+    /// with its sheet's id and nothing here resolves those.
+    pub sprite: Option<String>,
+    /// The sheet's id when the style used the `[{id, url}]` form.
+    ///
+    /// It matters because icon names are then written `id:name`, and the
+    /// index inside the sheet keys them without the prefix.
+    pub sprite_id: Option<String>,
     pub sources: BTreeMap<String, Source>,
     pub layers: Vec<Layer>,
     /// Whether the style composes other styles through Mapbox's `imports`.
@@ -209,6 +220,19 @@ impl Style {
 
         let name = obj.get("name").and_then(Json::as_str).map(str::to_owned);
         let glyphs = obj.get("glyphs").and_then(Json::as_str).map(str::to_owned);
+        let sprite_entry = obj.get("sprite").and_then(|value| match value {
+            Json::String(url) => Some((url.clone(), None)),
+            Json::Array(sheets) => sheets.first().and_then(|first| {
+                let url = first.get("url").and_then(Json::as_str)?.to_owned();
+                let id = first.get("id").and_then(Json::as_str).map(str::to_owned);
+                Some((url, id))
+            }),
+            _ => None,
+        });
+        let (sprite, sprite_id) = match sprite_entry {
+            Some((url, id)) => (Some(url), id),
+            None => (None, None),
+        };
 
         let mut sources = BTreeMap::new();
         if let Some(map) = obj.get("sources").and_then(Json::as_object) {
@@ -233,6 +257,8 @@ impl Style {
         Ok(Style {
             name,
             glyphs,
+            sprite,
+            sprite_id,
             sources,
             layers,
             has_imports,
@@ -439,6 +465,32 @@ fn parse_layer(value: &Json) -> Option<Layer> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Both spellings are in the wild: the old string and the list that
+    /// carries an id, which is also the prefix every icon name then uses.
+    #[test]
+    fn reads_either_spelling_of_sprite() {
+        let plain = Style::parse(
+            r##"{"version": 8, "sprite": "https://example.com/sprite",
+                 "sources": {}, "layers": []}"##,
+        )
+        .expect("parses");
+        assert_eq!(plain.sprite.as_deref(), Some("https://example.com/sprite"));
+        assert_eq!(plain.sprite_id, None);
+
+        let listed = Style::parse(
+            r##"{"version": 8,
+                 "sprite": [{"id": "basics", "url": "https://example.com/basics"}],
+                 "sources": {}, "layers": []}"##,
+        )
+        .expect("parses");
+        assert_eq!(listed.sprite.as_deref(), Some("https://example.com/basics"));
+        assert_eq!(listed.sprite_id.as_deref(), Some("basics"));
+
+        let none = Style::parse(r##"{"version": 8, "sources": {}, "layers": []}"##)
+            .expect("parses");
+        assert_eq!(none.sprite, None);
+    }
 
     fn sample() -> Style {
         Style::from_json(&json!({

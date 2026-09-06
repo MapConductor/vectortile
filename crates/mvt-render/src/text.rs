@@ -231,7 +231,7 @@ impl Anchor {
 
     /// Fraction of the label's box to shift by: (0,0) puts its top-left on the
     /// anchor point.
-    fn offset(self) -> (f32, f32) {
+    pub(crate) fn offset(self) -> (f32, f32) {
         match self {
             Anchor::Center => (-0.5, -0.5),
             Anchor::Left => (0.0, -0.5),
@@ -413,7 +413,31 @@ fn sample(bitmap: &[u8], width: i32, height: i32, x: f32, y: f32) -> f32 {
     top * (1.0 - ty) + bottom * ty
 }
 
-fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+/// Bilinear sample of the alpha channel of an RGBA buffer, on the 0..255
+/// scale the distance fields use.
+///
+/// An SDF sprite keeps its distance where a glyph keeps its whole bitmap, so
+/// the sampling is the same and only the stride differs.
+pub(crate) fn sample_alpha(rgba: &[u8], width: i32, height: i32, x: f32, y: f32) -> f32 {
+    let fx = (x - 0.5).clamp(0.0, (width - 1) as f32);
+    let fy = (y - 0.5).clamp(0.0, (height - 1) as f32);
+    let x0 = fx.floor() as i32;
+    let y0 = fy.floor() as i32;
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+    let tx = fx - x0 as f32;
+    let ty = fy - y0 as f32;
+
+    let at = |x: i32, y: i32| {
+        let index = (y * width + x) as usize * 4 + 3;
+        rgba.get(index).copied().unwrap_or(0) as f32
+    };
+    let top = at(x0, y0) * (1.0 - tx) + at(x1, y0) * tx;
+    let bottom = at(x0, y1) * (1.0 - tx) + at(x1, y1) * tx;
+    top * (1.0 - ty) + bottom * ty
+}
+
+pub(crate) fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     if edge1 <= edge0 {
         return if x < edge0 { 0.0 } else { 1.0 };
     }
@@ -426,7 +450,7 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
 /// tiny-skia has no way to run a per-pixel function, and a path per glyph
 /// would lose the field's antialiasing — which is the only reason the field is
 /// there.
-fn blend(pixmap: &mut Pixmap, x: i32, y: i32, color: Color, alpha: f32) {
+pub(crate) fn blend(pixmap: &mut Pixmap, x: i32, y: i32, color: Color, alpha: f32) {
     let index = (y as usize * pixmap.width() as usize + x as usize) * 4;
     let data = pixmap.data_mut();
     let src = [color.r, color.g, color.b];

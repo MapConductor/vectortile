@@ -39,7 +39,7 @@ pub fn render(
     tile_size: u32,
     decoded: &[DecodedTile],
 ) -> Option<(Pixmap, RenderStats)> {
-    render_with_glyphs(style, zoom, tile_size, decoded, &GlyphStore::new())
+    render_with_glyphs(style, zoom, tile_size, decoded, &GlyphStore::new(), None)
 }
 
 /// Renders one target tile, with labels if glyphs were supplied.
@@ -54,6 +54,7 @@ pub fn render_with_glyphs(
     tile_size: u32,
     decoded: &[DecodedTile],
     glyphs: &GlyphStore,
+    sprites: Option<&crate::sprite::SpriteSheet>,
 ) -> Option<(Pixmap, RenderStats)> {
     let mut pixmap = Pixmap::new(tile_size, tile_size)?;
     let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
@@ -101,15 +102,17 @@ pub fn render_with_glyphs(
         }
     }
 
-    if !glyphs.is_empty() {
-        let labels = symbol::collect(style, zoom, tile_size, paint_scale, decoded, glyphs);
+    // Either is enough on its own: a POI layer with only `icon-image` draws
+    // without a single glyph, and a place-name layer draws without a sheet.
+    if !glyphs.is_empty() || sprites.is_some_and(|sheet| !sheet.is_empty()) {
+        let labels = symbol::collect(style, zoom, tile_size, paint_scale, decoded, glyphs, sprites);
         // Two pixels of padding: labels that only just clear each other read
         // as one smear at small sizes.
         let placed = symbol::place(labels, 2.0 * paint_scale);
         if !placed.is_empty() {
             stats.layers_drawn += 1;
             stats.features_drawn += placed.len();
-            symbol::draw(&mut pixmap, &placed, glyphs);
+            symbol::draw(&mut pixmap, &placed, glyphs, sprites);
         }
     }
 

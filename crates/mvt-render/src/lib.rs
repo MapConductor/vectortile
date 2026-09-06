@@ -26,8 +26,10 @@
 //! and hands over as a [`text::GlyphStore`]; without one the symbol layers are
 //! simply skipped and everything else still draws. Placement is per tile, so a
 //! label near an edge is placed without knowing what its neighbour placed —
-//! see [`symbol`]. Point placement only; text along a line and sprite icons
-//! are reported by [`symbol::unsupported`] rather than drawn.
+//! see [`symbol`]. Icons come from the style's sprite sheet, which the host
+//! fetches from [`Renderer::sprite_urls`] and hands over as a pair; see
+//! [`sprite`]. Point placement only -- text along a line is reported by
+//! [`symbol::unsupported`] rather than drawn.
 //!
 //! [`Renderer::unsupported_layer_types`] reports layer types nothing here
 //! draws at all: raster, hillshade, fill-extrusion.
@@ -41,6 +43,7 @@ pub mod model;
 pub mod mvt;
 pub mod raster;
 pub mod style;
+pub mod sprite;
 pub mod symbol;
 #[cfg(feature = "tessellate")]
 pub mod tessellate;
@@ -108,6 +111,10 @@ pub struct Renderer {
     /// once. Reads are the common case by far, so a read/write lock rather
     /// than a mutex.
     glyphs: std::sync::RwLock<text::GlyphStore>,
+    /// The style's sprite sheet, once the host has fetched it. One sheet
+    /// covers the whole style, so unlike glyphs there is nothing to accumulate
+    /// -- it is either loaded or it is not.
+    sprites: std::sync::RwLock<Option<sprite::SpriteSheet>>,
 }
 
 /// One `{fontstack}/{range}.pbf` the renderer needs and does not have.
@@ -129,11 +136,19 @@ impl GlyphRequest {
     }
 }
 
+/// Where a style's sprite sheet lives: an index and the image it indexes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpriteRequest {
+    pub json_url: String,
+    pub png_url: String,
+}
+
 impl Renderer {
     pub fn new(style_json: &str) -> Result<Renderer, RenderError> {
         Ok(Renderer {
             style: Style::parse(style_json)?,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
+            sprites: std::sync::RwLock::new(None),
         })
     }
 
@@ -141,12 +156,51 @@ impl Renderer {
         Renderer {
             style,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
+            sprites: std::sync::RwLock::new(None),
         }
     }
 
     /// The style's `glyphs` URL template, if it has one.
     pub fn glyphs_url_template(&self) -> Option<&str> {
         self.style.glyphs.as_deref()
+    }
+
+    /// The two URLs the style's sprite lives at, for the given pixel ratio.
+    ///
+    /// A sprite URL names a pair rather than a file: `sprite.json` says where
+    /// each icon sits inside `sprite.png`. A ratio above 1 asks for the `@2x`
+    /// pair, which is what a style ships for dense screens.
+    pub fn sprite_urls(&self, pixel_ratio: u32) -> Option<SpriteRequest> {
+        let base = self.style.sprite.as_deref()?;
+        let suffix = if pixel_ratio > 1 { "@2x" } else { "" };
+        Some(SpriteRequest {
+            json_url: format!("{base}{suffix}.json"),
+            png_url: format!("{base}{suffix}.png"),
+        })
+    }
+
+    /// Takes the fetched pair and keeps the sheet. Returns how many icons it
+    /// holds.
+    pub fn add_sprite(&self, json: &str, png: &[u8]) -> Result<usize, RenderError> {
+        let mut sheet = sprite::SpriteSheet::parse(json, png)
+            .map_err(|e| RenderError::Decode(e.to_string()))?;
+        sheet.set_id(self.style.sprite_id.clone());
+        let count = sheet.len();
+        let mut slot = self
+            .sprites
+            .write()
+            .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
+        *slot = Some(sheet);
+        Ok(count)
+    }
+
+    pub fn has_sprite(&self) -> bool {
+        self.sprites.read().map(|s| s.is_some()).unwrap_or(false)
+    }
+
+    /// Whether the style names a sprite that has not been supplied yet.
+    pub fn needs_sprite(&self) -> bool {
+        self.style.sprite.is_some() && !self.has_sprite()
     }
 
     /// Takes one fetched `.pbf` and keeps its glyphs.
@@ -379,8 +433,19 @@ impl Renderer {
             .glyphs
             .read()
             .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
-        raster::render_with_glyphs(&self.style, z as f64, tile_size, &decoded, &store)
-            .ok_or(RenderError::BadTileSize(tile_size))
+        let sprites = self
+            .sprites
+            .read()
+            .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
+        raster::render_with_glyphs(
+            &self.style,
+            z as f64,
+            tile_size,
+            &decoded,
+            &store,
+            sprites.as_ref(),
+        )
+        .ok_or(RenderError::BadTileSize(tile_size))
     }
 
     /// Draws this tile's labels onto an RGBA buffer someone else rasterised.
@@ -411,7 +476,11 @@ impl Renderer {
             .glyphs
             .read()
             .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
-        if store.is_empty() {
+        let sprites = self
+            .sprites
+            .read()
+            .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
+        if store.is_empty() && sprites.is_none() {
             return Ok(0);
         }
 
@@ -425,6 +494,7 @@ impl Renderer {
             paint_scale,
             &decoded,
             &store,
+            sprites.as_ref(),
         );
         let placed = symbol::place(labels, 2.0 * paint_scale);
         if placed.is_empty() {
@@ -439,7 +509,7 @@ impl Renderer {
         // alpha is saturated is both at once. Copying sidesteps having to
         // prove that at the type level for a buffer that came from GL.
         pixmap.data_mut().copy_from_slice(rgba);
-        symbol::draw(&mut pixmap, &placed, &store);
+        symbol::draw(&mut pixmap, &placed, &store, sprites.as_ref());
         rgba.copy_from_slice(pixmap.data());
         Ok(placed.len())
     }
@@ -726,7 +796,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let mut renderer = Renderer::from_style(style);
+        let renderer = Renderer::from_style(style);
 
         let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
             name: "place".into(),
@@ -759,6 +829,96 @@ mod tests {
         assert_eq!(ranges, vec![78 * 256]);
     }
 
+    /// The sprite pair is derived from one URL, and a style that asks for a
+    /// dense sheet must not be handed the plain one.
+    #[test]
+    fn names_both_halves_of_the_sprite_pair() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sprite": "https://example.com/sprites/basic",
+            "sources": {},
+            "layers": []
+        }))
+        .unwrap();
+        let renderer = Renderer::from_style(style);
+
+        let plain = renderer.sprite_urls(1).expect("a sprite");
+        assert_eq!(plain.json_url, "https://example.com/sprites/basic.json");
+        assert_eq!(plain.png_url, "https://example.com/sprites/basic.png");
+
+        let dense = renderer.sprite_urls(2).expect("a sprite");
+        assert_eq!(dense.json_url, "https://example.com/sprites/basic@2x.json");
+        assert_eq!(dense.png_url, "https://example.com/sprites/basic@2x.png");
+    }
+
+    #[test]
+    fn asks_for_no_sprite_when_the_style_names_none() {
+        let style = Style::from_json(&json!({
+            "version": 8, "sources": {}, "layers": []
+        }))
+        .unwrap();
+        let renderer = Renderer::from_style(style);
+        assert!(renderer.sprite_urls(1).is_none());
+        assert!(!renderer.needs_sprite(), "nothing to wait for");
+    }
+
+    /// An icon is a symbol with no text, and it has to draw on its own --
+    /// a POI layer that names only `icon-image` is the common case.
+    #[test]
+    fn draws_icons_once_the_sheet_is_supplied() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sprite": "https://example.com/sprite",
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [
+                { "id": "bg", "type": "background", "paint": { "background-color": "#ffffff" } },
+                {
+                    "id": "pois", "type": "symbol", "source": "src", "source-layer": "poi",
+                    "layout": { "icon-image": "{kind}", "icon-size": 4 }
+                }
+            ]
+        }))
+        .unwrap();
+        let renderer = Renderer::from_style(style);
+        let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "poi".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Point,
+                points: vec![(2048, 2048)],
+                props: vec![("kind".into(), "pin".into())],
+            }],
+        }]);
+
+        let ink = |renderer: &Renderer| {
+            let (pixmap, _) = renderer
+                .render_pixmap(10, 512, 300, 256, &[Some(&tile)])
+                .expect("renders");
+            pixmap
+                .pixels()
+                .iter()
+                .filter(|p| p.red() < 200 || p.green() < 200 || p.blue() < 200)
+                .count()
+        };
+
+        assert!(renderer.needs_sprite(), "the style names a sprite");
+        assert_eq!(ink(&renderer), 0, "no sheet, no icons");
+
+        let mut sheet = tiny_skia::Pixmap::new(4, 4).expect("pixmap");
+        for slot in sheet.pixels_mut().iter_mut() {
+            *slot = tiny_skia::ColorU8::from_rgba(0, 0, 0, 255).premultiply();
+        }
+        renderer
+            .add_sprite(
+                r#"{"pin": {"x": 0, "y": 0, "width": 4, "height": 4, "pixelRatio": 1}}"#,
+                &sheet.encode_png().expect("encode"),
+            )
+            .expect("sheet loads");
+
+        assert!(!renderer.needs_sprite());
+        assert!(ink(&renderer) > 0, "the icon draws once the sheet is in");
+    }
+
     /// Labels only appear once glyphs arrive; before that the rest of the tile
     /// still has to draw.
     #[test]
@@ -777,7 +937,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let mut renderer = Renderer::from_style(style);
+        let renderer = Renderer::from_style(style);
         let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
             name: "place".into(),
             extent: 4096,

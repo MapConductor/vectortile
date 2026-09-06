@@ -430,6 +430,93 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeAdd
 }
 
 #[no_mangle]
+/// The style's sprite pair for this pixel ratio, as a JSON array of two URLs
+/// (index first, then image), or an empty array when the style has no sprite.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeSpriteUrls(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    pixel_ratio: jint,
+) -> jstring {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        let urls: Vec<String> = match renderer.sprite_urls(pixel_ratio.max(1) as u32) {
+            Some(request) => vec![
+                json_string(&request.json_url),
+                json_string(&request.png_url),
+            ],
+            None => Vec::new(),
+        };
+        match env.new_string(format!("[{}]", urls.join(","))) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+#[no_mangle]
+/// Whether the style names a sprite the renderer has not been given yet.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNeedsSprite(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jint {
+    guarded(&mut env, 0, |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return 0;
+        };
+        jint::from(renderer.needs_sprite())
+    })
+}
+
+#[no_mangle]
+/// Takes the fetched sprite pair and keeps the sheet. Returns the icon count.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeAddSprite(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    index_json: JString,
+    png: JByteArray,
+) -> jint {
+    guarded(&mut env, 0, |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return 0;
+        };
+        let json: String = match env.get_string(&index_json) {
+            Ok(value) => value.into(),
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad sprite index: {error}"));
+                return 0;
+            }
+        };
+        let bytes = match env.convert_byte_array(&png) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad sprite sheet: {error}"));
+                return 0;
+            }
+        };
+        match renderer.add_sprite(&json, &bytes) {
+            Ok(icons) => icons as jint,
+            Err(error) => {
+                // A broken sheet costs the icons and nothing else; the rest of
+                // the tile, labels included, still draws.
+                throw(env, ILLEGAL_ARGUMENT, &format!("{error}"));
+                0
+            }
+        }
+    })
+}
+
+#[no_mangle]
 /// Draws this tile's labels onto an RGBA buffer the GPU produced, in place.
 ///
 /// Returns how many labels were placed, or 0 when there is nothing to draw.
