@@ -496,7 +496,7 @@ impl Renderer {
             &store,
             sprites.as_ref(),
         );
-        let placed = symbol::place(labels, 2.0 * paint_scale);
+        let placed = symbol::place(labels);
         if placed.is_empty() {
             return Ok(0);
         }

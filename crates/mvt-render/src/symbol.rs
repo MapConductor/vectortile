@@ -36,6 +36,17 @@ use crate::sprite::{self, IconPaint, SpriteSheet};
 use crate::style::{Layer, LayerKind, Style};
 use crate::text::{self, Anchor, GlyphStore, Shaped, TextPaint};
 
+/// Where a symbol goes and which way it faces.
+///
+/// A point symbol has one of these; a line-placed one has a run of them, each
+/// carrying the direction of the line beneath it.
+#[derive(Debug, Clone, Copy)]
+struct Spot {
+    at: (f32, f32),
+    angle: f32,
+    along_a_line: bool,
+}
+
 /// An icon that has been positioned but not yet drawn.
 pub struct IconPlacement {
     /// Name in the sheet. Kept rather than resolved so the sheet stays
@@ -62,6 +73,19 @@ pub struct Label {
     /// Axis-aligned box the label will cover, for collision. Covers both the
     /// text and the icon when there are both.
     pub bounds: [f32; 4],
+    /// The halves on their own, so a style that marks one of them optional can
+    /// be given the other when the pair will not fit.
+    pub text_bounds: Option<[f32; 4]>,
+    pub icon_bounds: Option<[f32; 4]>,
+    /// `icon-optional` / `text-optional`: which half may be dropped to save
+    /// the other. A POI layer routinely says the pin is expendable and the
+    /// name is not.
+    pub icon_optional: bool,
+    pub text_optional: bool,
+    /// Room to keep clear around it, from `text-padding` or `icon-padding`.
+    /// Per label rather than per pass: arrows repeated along a road are meant
+    /// to sit closer together than two place names ever should.
+    pub padding: f32,
     pub allow_overlap: bool,
 }
 
@@ -74,8 +98,10 @@ pub fn unsupported(style: &Style, zoom: f64) -> Vec<String> {
         }
         let ctx = Ctx::zoom_only(zoom);
         if let Some(placement) = layer.layout_string("symbol-placement", &ctx) {
-            if placement != "point" {
-                reasons.push(format!("{}: symbol-placement {}", layer.id, placement));
+            // Icons follow a line now; glyphs still do not, so this is only
+            // a loss for a layer that has something to say.
+            if placement != "point" && layer.layout.contains_key("text-field") {
+                reasons.push(format!("{}: text along a {}", layer.id, placement));
             }
         }
     }
@@ -175,7 +201,7 @@ pub fn collect(
     // Nothing to draw labels *with*. A style whose symbols are all icons can
     // still draw them, which is why this is not a test of the glyph store
     // alone.
-    if store.is_empty() && sprites.map_or(true, SpriteSheet::is_empty) {
+    if store.is_empty() && sprites.is_none_or(SpriteSheet::is_empty) {
         return labels;
     }
 
@@ -184,15 +210,15 @@ pub fn collect(
             continue;
         }
         let zoom_ctx = Ctx::zoom_only(zoom);
-        // Only point placement for now; a line label needs the geometry walked
-        // and the glyphs rotated per segment.
-        if layer
+        // Along a line, symbols repeat: one every `symbol-spacing`, each
+        // turned to follow the road under it. Text is still point-only -- the
+        // glyphs would have to be laid along the curve one at a time -- so a
+        // line-placed layer contributes its icons and `unsupported` reports
+        // the rest.
+        let placement = layer
             .layout_string("symbol-placement", &zoom_ctx)
-            .map(|p| p != "point")
-            .unwrap_or(false)
-        {
-            continue;
-        }
+            .unwrap_or_else(|| "point".to_string());
+        let along_a_line = placement == "line" || placement == "line-center";
 
         let Some(source_id) = layer.source.as_deref() else {
             continue;
@@ -222,17 +248,38 @@ pub fn collect(
                 layer: Some(data_layer),
                 feature: Some(feature),
             };
-            let Some(anchor_point) =
+            // One symbol at the feature's anchor, or a run of them along it.
+            let spots: Vec<(f32, f32, f32)> = if along_a_line {
+                let spacing =
+                    layer.layout_number("symbol-spacing", &ctx, 250.0) as f32 * paint_scale;
+                let keep_upright = layer
+                    .layout_value("icon-keep-upright", &ctx)
+                    .map(|v| v.truthy())
+                    .unwrap_or(false);
+                line_anchors(
+                    feature,
+                    decoded_tile,
+                    data_layer.extent,
+                    tile_size,
+                    spacing,
+                    keep_upright,
+                )
+            } else {
                 anchor_point(feature, decoded_tile, data_layer.extent, tile_size)
-            else {
-                continue;
+                    .map(|at| vec![(at.0, at.1, 0.0)])
+                    .unwrap_or_default()
             };
 
-            let icon = icon_placement(layer, &ctx, sprites, paint_scale, anchor_point);
+            for (ax, ay, angle) in spots {
+            let anchor_point = (ax, ay);
 
-            let content = text_field(layer, &ctx)
-                .map(|raw| transform_case(&raw, layer.layout_string("text-transform", &ctx)))
-                .filter(|content| !content.trim().is_empty());
+            let content = if along_a_line {
+                None
+            } else {
+                text_field(layer, &ctx)
+                    .map(|raw| transform_case(&raw, layer.layout_string("text-transform", &ctx)))
+                    .filter(|content| !content.trim().is_empty())
+            };
 
             let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
             let shaped = match &content {
@@ -242,12 +289,6 @@ pub fn collect(
                 }
                 _ => Shaped::default(),
             };
-            // A symbol with neither its glyphs nor its icon yet is not a
-            // label; it would reserve space for nothing and push its
-            // neighbours out of the way.
-            if shaped.is_empty() && icon.is_none() {
-                continue;
-            }
 
             let anchor = layer
                 .layout_string("text-anchor", &ctx)
@@ -265,15 +306,35 @@ pub fn collect(
                 halo_width: layer.paint_number("text-halo-width", &ctx, 0.0) as f32 * paint_scale,
                 opacity,
             };
-            if opacity <= 0.0 && icon.is_none() {
-                continue;
-            }
 
-            let text_bounds = if shaped.is_empty() {
+            let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
                 None
             } else {
                 Some(text::bounds(&shaped, &paint, anchor, at))
             };
+
+            // After the text, because `icon-text-fit` sizes the icon around
+            // it: a shield is only as wide as the number it carries.
+            let icon = icon_placement(
+                layer,
+                &ctx,
+                sprites,
+                paint_scale,
+                Spot {
+                    at: anchor_point,
+                    angle,
+                    along_a_line,
+                },
+                text_bounds,
+            );
+
+            // A symbol with neither its glyphs nor its icon yet is not a
+            // label; it would reserve space for nothing and push its
+            // neighbours out of the way.
+            if (shaped.is_empty() || opacity <= 0.0) && icon.is_none() {
+                continue;
+            }
+
             let icon_bounds = icon.as_ref().and_then(|placement| {
                 sprites
                     .and_then(|sheet| sheet.icon(&placement.name))
@@ -294,6 +355,20 @@ pub fn collect(
                     .map(|v| v.truthy())
                     .unwrap_or(false);
 
+            // `symbol-avoid-edges` is how a style says a symbol must not be
+            // cut in half at a tile seam. Every tile here is drawn without
+            // sight of its neighbours, so honouring it also stops the two
+            // sides drawing the same arrow twice.
+            if avoid_edges(layer, &ctx) && leaves_tile(bounds, tile_size) {
+                continue;
+            }
+
+            let padding = if icon.is_some() && shaped.is_empty() {
+                layer.layout_number("icon-padding", &ctx, 2.0) as f32 * paint_scale
+            } else {
+                layer.layout_number("text-padding", &ctx, 2.0) as f32 * paint_scale
+            };
+
             labels.push(Label {
                 shaped,
                 fonts: fonts.clone(),
@@ -302,11 +377,116 @@ pub fn collect(
                 at,
                 icon,
                 bounds,
+                text_bounds,
+                icon_bounds,
+                icon_optional: layer
+                    .layout_value("icon-optional", &ctx)
+                    .map(|v| v.truthy())
+                    .unwrap_or(false),
+                text_optional: layer
+                    .layout_value("text-optional", &ctx)
+                    .map(|v| v.truthy())
+                    .unwrap_or(false),
+                padding,
                 allow_overlap,
             });
+            }
         }
     }
     labels
+}
+
+fn avoid_edges(layer: &Layer, ctx: &Ctx) -> bool {
+    layer
+        .layout_value("symbol-avoid-edges", ctx)
+        .map(|v| v.truthy())
+        .unwrap_or(false)
+}
+
+fn leaves_tile(bounds: [f32; 4], tile_size: u32) -> bool {
+    let size = tile_size as f32;
+    bounds[0] < 0.0 || bounds[1] < 0.0 || bounds[2] > size || bounds[3] > size
+}
+
+/// Points along a feature's lines, in target pixels, with the direction of the
+/// line at each one.
+///
+/// The first sits half a spacing in, so a road shorter than the spacing still
+/// gets one marking rather than none.
+fn line_anchors(
+    feature: &model::Feature,
+    decoded: &crate::raster::DecodedTile,
+    extent: u32,
+    tile_size: u32,
+    spacing: f32,
+    keep_upright: bool,
+) -> Vec<(f32, f32, f32)> {
+    let mut out = Vec::new();
+    if spacing < 1.0 {
+        return out;
+    }
+    for part in &feature.parts {
+        if part.len() < 2 {
+            continue;
+        }
+        let points: Vec<(f32, f32)> = part
+            .iter()
+            .map(|p| to_pixels(p[0], p[1], decoded, extent, tile_size))
+            .collect();
+
+        let mut travelled = 0.0f32;
+        let mut next = spacing / 2.0;
+        for pair in points.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let length = dx.hypot(dy);
+            if length <= f32::EPSILON {
+                continue;
+            }
+            while next <= travelled + length {
+                let t = (next - travelled) / length;
+                let mut angle = dy.atan2(dx).to_degrees();
+                // Upside down reads as a different sign entirely, so a style
+                // can ask for the symbol to be turned the right way up.
+                if keep_upright && !(-90.0..=90.0).contains(&angle) {
+                    angle = normalise_degrees(angle + 180.0);
+                }
+                out.push((a.0 + dx * t, a.1 + dy * t, angle));
+                next += spacing;
+            }
+            travelled += length;
+        }
+    }
+    out
+}
+
+/// Folds an angle back into (-180, 180], so a flipped symbol reads as 0
+/// rather than 360.
+fn normalise_degrees(angle: f32) -> f32 {
+    let wrapped = angle % 360.0;
+    if wrapped > 180.0 {
+        wrapped - 360.0
+    } else if wrapped <= -180.0 {
+        wrapped + 360.0
+    } else {
+        wrapped
+    }
+}
+
+/// Tile coordinates to target pixels, allowing for an overzoomed parent.
+fn to_pixels(
+    x: f32,
+    y: f32,
+    decoded: &crate::raster::DecodedTile,
+    extent: u32,
+    tile_size: u32,
+) -> (f32, f32) {
+    let size = tile_size as f32;
+    let k = size * decoded.scale / extent as f32;
+    (
+        x * k - decoded.offset_x * decoded.scale * size,
+        y * k - decoded.offset_y * decoded.scale * size,
+    )
 }
 
 /// Drops labels that would cover one already kept.
@@ -316,21 +496,49 @@ pub fn collect(
 /// so by putting them first. Two labels touching at a corner is still a
 /// collision: the boxes include the halo's bleed, and text that nearly
 /// overlaps reads worse than text that is missing.
-pub fn place(labels: Vec<Label>, padding: f32) -> Vec<Label> {
+pub fn place(labels: Vec<Label>) -> Vec<Label> {
     let mut kept: Vec<Label> = Vec::new();
-    for label in labels {
+    for mut label in labels {
         if label.allow_overlap {
             kept.push(label);
             continue;
         }
-        let b = grow(label.bounds, padding);
-        if kept
-            .iter()
-            .any(|other| !other.allow_overlap && overlaps(b, grow(other.bounds, padding)))
-        {
+
+        let fits = |bounds: [f32; 4], padding: f32, kept: &[Label]| {
+            let grown = grow(bounds, padding);
+            !kept
+                .iter()
+                .any(|other| !other.allow_overlap && overlaps(grown, grow(other.bounds, other.padding)))
+        };
+
+        if fits(label.bounds, label.padding, &kept) {
+            kept.push(label);
             continue;
         }
-        kept.push(label);
+
+        // The pair does not fit. A style that marked one half optional would
+        // rather have the other half than nothing -- a POI whose pin is in the
+        // way still wants its name read.
+        if label.icon_optional {
+            if let Some(text_only) = label.text_bounds {
+                if fits(text_only, label.padding, &kept) {
+                    label.icon = None;
+                    label.bounds = text_only;
+                    kept.push(label);
+                    continue;
+                }
+            }
+        }
+        if label.text_optional {
+            if let Some(icon_only) = label.icon_bounds {
+                if fits(icon_only, label.padding, &kept) {
+                    label.shaped = Shaped::default();
+                    label.bounds = icon_only;
+                    kept.push(label);
+                    continue;
+                }
+            }
+        }
     }
     kept
 }
@@ -415,8 +623,14 @@ fn icon_placement(
     ctx: &Ctx,
     sprites: Option<&SpriteSheet>,
     paint_scale: f32,
-    anchor_point: (f32, f32),
+    spot: Spot,
+    text_bounds: Option<[f32; 4]>,
 ) -> Option<IconPlacement> {
+    let Spot {
+        at: anchor_point,
+        angle: line_angle,
+        along_a_line,
+    } = spot;
     let sheet = sprites?;
     let raw = layer.layout.get("icon-image")?;
     let name = match raw.as_str() {
@@ -443,6 +657,12 @@ fn icon_placement(
     // and with the tile's scale, exactly as the icon does.
     let (ox, oy) = offset_of(layer, "icon-offset");
     let scale = size * paint_scale;
+
+    // `icon-text-fit` resizes the icon around its label, which is how one
+    // shield in a sheet serves every route number. The icon then sits on the
+    // text rather than on the feature's own point.
+    let icon_entry = sheet.icon(&name)?;
+    let fitted = text_fit(layer, ctx, icon_entry, scale, paint_scale, text_bounds);
     Some(IconPlacement {
         name,
         paint: IconPaint {
@@ -451,13 +671,107 @@ fn icon_placement(
             color: layer.paint_color("icon-color", ctx, Color::BLACK),
             halo_color: layer.paint_color("icon-halo-color", ctx, Color::TRANSPARENT),
             halo_width: layer.paint_number("icon-halo-width", ctx, 0.0) as f32,
+            // A map-aligned symbol turns with the ground under it; a
+            // viewport-aligned one keeps its own angle whatever the map does.
+            // Along a line the first is the default, and it is the whole point
+            // -- an arrow that does not follow its road points nowhere.
+            rotation: layer.layout_number("icon-rotate", ctx, 0.0) as f32
+                + if map_aligned(layer, ctx, along_a_line) {
+                    line_angle
+                } else {
+                    0.0
+                },
+            stretch_to: fitted.map(|(size, _)| size),
         },
         anchor: layer
             .layout_string("icon-anchor", ctx)
             .map(|a| Anchor::from_str(&a))
             .unwrap_or(Anchor::Center),
-        at: (anchor_point.0 + ox * scale, anchor_point.1 + oy * scale),
+        at: match fitted {
+            Some((_, centre)) => centre,
+            None => (anchor_point.0 + ox * scale, anchor_point.1 + oy * scale),
+        },
     })
+}
+
+/// The size and centre an `icon-text-fit` icon should be drawn at.
+///
+/// The padded text box is what the icon's *content* has to cover, so the
+/// margins outside the content -- a shield's border -- are added back rather
+/// than squashed. Returns `None` when the style does not ask for a fit, or
+/// when there is no text to fit around.
+fn text_fit(
+    layer: &Layer,
+    ctx: &Ctx,
+    icon: &crate::sprite::Icon,
+    scale: f32,
+    paint_scale: f32,
+    text_bounds: Option<[f32; 4]>,
+) -> Option<((f32, f32), (f32, f32))> {
+    let fit = layer.layout_string("icon-text-fit", ctx)?;
+    if fit == "none" {
+        return None;
+    }
+    let text = text_bounds?;
+
+    // `icon-text-fit-padding` is [top, right, bottom, left].
+    let pad = layer
+        .layout
+        .get("icon-text-fit-padding")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            let n = |i: usize| items.get(i).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            [n(0), n(1), n(2), n(3)]
+        })
+        .unwrap_or([0.0; 4])
+        .map(|v| v * paint_scale);
+
+    let wanted_w = (text[2] - text[0]) + pad[1] + pad[3];
+    let wanted_h = (text[3] - text[1]) + pad[0] + pad[2];
+
+    // What the icon adds around its content, at the size it would have drawn.
+    let (natural_w, natural_h) = icon.display_size();
+    let (natural_w, natural_h) = (natural_w * scale, natural_h * scale);
+    let (margin_w, margin_h) = match icon.content {
+        Some(content) => {
+            let k = scale / icon.pixel_ratio.max(0.001);
+            (
+                natural_w - (content[2] - content[0]) * k,
+                natural_h - (content[3] - content[1]) * k,
+            )
+        }
+        None => (0.0, 0.0),
+    };
+
+    let width = match fit.as_str() {
+        "width" | "both" => wanted_w + margin_w,
+        _ => natural_w,
+    };
+    let height = match fit.as_str() {
+        "height" | "both" => wanted_h + margin_h,
+        _ => natural_h,
+    };
+
+    let centre = (
+        (text[0] + text[2]) / 2.0 + (pad[3] - pad[1]) / 2.0,
+        (text[1] + text[3]) / 2.0 + (pad[0] - pad[2]) / 2.0,
+    );
+    Some(((width, height), centre))
+}
+
+/// Whether the icon turns with the map rather than with the screen.
+///
+/// The spec's default differs by placement -- map for a line, viewport for a
+/// point -- and this renderer draws north-up, so a viewport-aligned icon is
+/// left with only its own `icon-rotate`.
+fn map_aligned(layer: &Layer, ctx: &Ctx, along_a_line: bool) -> bool {
+    match layer.layout_string("icon-rotation-alignment", ctx).as_deref() {
+        Some("map") => true,
+        Some("viewport") => false,
+        // `auto` means map on a line and viewport at a point, which is also
+        // what the absent value means.
+        _ => along_a_line,
+    }
 }
 
 /// The box covering both, or whichever one there is.
@@ -554,9 +868,7 @@ fn anchor_point(
     };
 
     let size = tile_size as f32;
-    let k = size * decoded.scale / extent as f32;
-    let px = x * k - decoded.offset_x * decoded.scale * size;
-    let py = y * k - decoded.offset_y * decoded.scale * size;
+    let (px, py) = to_pixels(x, y, decoded, extent, tile_size);
     // A label whose anchor is well outside the tile belongs to a neighbour.
     let margin = size * 0.25;
     if px < -margin || py < -margin || px > size + margin || py > size + margin {
@@ -612,6 +924,132 @@ mod tests {
         let mut s = GlyphStore::new();
         s.insert(stack);
         s
+    }
+
+    /// `icon-optional` is a style saying the pin is expendable and the name is
+    /// not. Dropping both is the wrong answer, and so is keeping both.
+    #[test]
+    fn gives_up_the_optional_half_rather_than_the_whole_label() {
+        let blocker = label(0.0, 0.0, 40.0, 20.0, false);
+
+        // Its icon sits inside the blocker; its text is clear of it.
+        let mut crowded = label(0.0, 0.0, 100.0, 20.0, false);
+        crowded.icon_bounds = Some([10.0, 5.0, 30.0, 15.0]);
+        crowded.text_bounds = Some([60.0, 0.0, 100.0, 20.0]);
+        crowded.icon = None; // nothing to draw in this test; the boxes decide
+        crowded.icon_optional = true;
+
+        let kept = place(vec![blocker, crowded]);
+        assert_eq!(kept.len(), 2, "the name survived without its pin");
+        assert_eq!(
+            kept[1].bounds,
+            [60.0, 0.0, 100.0, 20.0],
+            "and reserves only the room it now uses"
+        );
+    }
+
+    #[test]
+    fn drops_both_halves_when_neither_is_optional() {
+        let blocker = label(0.0, 0.0, 40.0, 20.0, false);
+        let mut crowded = label(0.0, 0.0, 100.0, 20.0, false);
+        crowded.icon_bounds = Some([10.0, 5.0, 30.0, 15.0]);
+        crowded.text_bounds = Some([60.0, 0.0, 100.0, 20.0]);
+
+        assert_eq!(place(vec![blocker, crowded]).len(), 1);
+    }
+
+    /// A style repeats a marking along a road with `symbol-spacing`, and each
+    /// one has to point the way the road does.
+    #[test]
+    fn walks_a_line_and_turns_each_symbol_to_follow_it() {
+        // A straight horizontal line across the tile: 4096 units of extent
+        // become 512 pixels, so the whole line is 512 long.
+        let bytes = encode_tile(&[LayerSpec {
+            name: "roads".into(),
+            extent: 4096,
+            features: vec![FeatureSpec {
+                geom: Geom::Line,
+                points: vec![(0, 2048), (4096, 2048)],
+                props: vec![],
+            }],
+        }]);
+        let tile = crate::mvt::decode(&bytes).expect("decodes");
+        let decoded = crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile,
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        let feature = &decoded.tile.layers[0].features[0];
+
+        let spots = line_anchors(feature, &decoded, 4096, 512, 100.0, false);
+        // First at half a spacing, then every spacing: 50, 150, 250, 350, 450.
+        assert_eq!(spots.len(), 5);
+        assert!((spots[0].0 - 50.0).abs() < 0.5, "got {:?}", spots[0]);
+        assert!((spots[1].0 - 150.0).abs() < 0.5, "got {:?}", spots[1]);
+        for spot in &spots {
+            assert!((spot.1 - 256.0).abs() < 0.5, "off the line: {spot:?}");
+            assert!(spot.2.abs() < 0.5, "a flat line is 0 degrees, got {spot:?}");
+        }
+    }
+
+    /// A road drawn right-to-left is the same road; a symbol that follows it
+    /// blindly ends up upside down, which `icon-keep-upright` exists to stop.
+    #[test]
+    fn keeps_a_symbol_upright_when_asked() {
+        let bytes = encode_tile(&[LayerSpec {
+            name: "roads".into(),
+            extent: 4096,
+            features: vec![FeatureSpec {
+                geom: Geom::Line,
+                points: vec![(4096, 2048), (0, 2048)],
+                props: vec![],
+            }],
+        }]);
+        let tile = crate::mvt::decode(&bytes).expect("decodes");
+        let decoded = crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile,
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        let feature = &decoded.tile.layers[0].features[0];
+
+        let facing = line_anchors(feature, &decoded, 4096, 512, 200.0, false);
+        assert!((facing[0].2.abs() - 180.0).abs() < 0.5, "got {:?}", facing[0]);
+
+        let upright = line_anchors(feature, &decoded, 4096, 512, 200.0, true);
+        assert!(upright[0].2.abs() < 0.5, "got {:?}", upright[0]);
+    }
+
+    /// A line shorter than one spacing still carries its marking -- that is
+    /// what the half-spacing start is for.
+    #[test]
+    fn a_short_line_still_gets_one_symbol() {
+        let bytes = encode_tile(&[LayerSpec {
+            name: "roads".into(),
+            extent: 4096,
+            features: vec![FeatureSpec {
+                geom: Geom::Line,
+                points: vec![(2000, 2048), (2400, 2048)],
+                props: vec![],
+            }],
+        }]);
+        let tile = crate::mvt::decode(&bytes).expect("decodes");
+        let decoded = crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile,
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        };
+        let feature = &decoded.tile.layers[0].features[0];
+
+        // The line is 50 pixels long and the spacing is 40.
+        let spots = line_anchors(feature, &decoded, 4096, 512, 40.0, false);
+        assert_eq!(spots.len(), 1);
     }
 
     /// A pin and its name are one thing. Keeping the name after the pin lost
@@ -682,7 +1120,7 @@ mod tests {
             labels[0].bounds
         );
 
-        let placed = place(labels, 2.0);
+        let placed = place(labels);
         assert_eq!(placed.len(), 1, "the second symbol collided and was dropped");
     }
 
@@ -701,20 +1139,22 @@ mod tests {
             at: (x, y),
             icon: None,
             bounds: [x, y, x + w, y + h],
+            text_bounds: Some([x, y, x + w, y + h]),
+            icon_bounds: None,
+            icon_optional: false,
+            text_optional: false,
+            padding: 0.0,
             allow_overlap,
         }
     }
 
     #[test]
     fn drops_a_label_that_covers_one_already_kept() {
-        let kept = place(
-            vec![
+        let kept = place(vec![
                 label(0.0, 0.0, 50.0, 20.0, false),
                 label(10.0, 5.0, 50.0, 20.0, false),
                 label(200.0, 200.0, 50.0, 20.0, false),
-            ],
-            0.0,
-        );
+            ]);
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].at, (0.0, 0.0));
         assert_eq!(kept[1].at, (200.0, 200.0));
@@ -724,29 +1164,33 @@ mod tests {
     /// tidiness — a one-way arrow, a shield.
     #[test]
     fn keeps_labels_that_allow_overlap() {
-        let kept = place(
-            vec![
+        let kept = place(vec![
                 label(0.0, 0.0, 50.0, 20.0, false),
                 label(0.0, 0.0, 50.0, 20.0, true),
-            ],
-            0.0,
-        );
+            ]);
         assert_eq!(kept.len(), 2);
     }
 
+    /// Padding is the label's own now, because a line of arrows and a pair of
+    /// place names want different amounts of room.
     #[test]
     fn padding_separates_labels_that_merely_touch() {
         let touching = vec![
             label(0.0, 0.0, 50.0, 20.0, false),
             label(50.0, 0.0, 50.0, 20.0, false),
         ];
-        assert_eq!(place(touching, 0.0).len(), 2, "no padding, no collision");
+        assert_eq!(place(touching).len(), 2, "no padding, no collision");
 
-        let touching = vec![
-            label(0.0, 0.0, 50.0, 20.0, false),
-            label(50.0, 0.0, 50.0, 20.0, false),
-        ];
-        assert_eq!(place(touching, 2.0).len(), 1, "padding pushes them apart");
+        let padded = |x: f32| {
+            let mut l = label(x, 0.0, 50.0, 20.0, false);
+            l.padding = 2.0;
+            l
+        };
+        assert_eq!(
+            place(vec![padded(0.0), padded(50.0)]).len(),
+            1,
+            "padding pushes them apart"
+        );
     }
 
     /// Every basemap style still writes `text-field: "{name}"`. Evaluating

@@ -108,7 +108,7 @@ pub fn render_with_glyphs(
         let labels = symbol::collect(style, zoom, tile_size, paint_scale, decoded, glyphs, sprites);
         // Two pixels of padding: labels that only just clear each other read
         // as one smear at small sizes.
-        let placed = symbol::place(labels, 2.0 * paint_scale);
+        let placed = symbol::place(labels);
         if !placed.is_empty() {
             stats.layers_drawn += 1;
             stats.features_drawn += placed.len();
