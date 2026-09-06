@@ -14,17 +14,20 @@
 //!
 //! # What is not
 //!
-//! Text along a line (`symbol-placement: line`) and `text-letter-spacing`.
-//! Icons are drawn -- see [`crate::sprite`] -- but only where the sheet has
-//! them and only at point placement, so the arrows a style repeats along a
-//! road are still missing.
+//! `text-letter-spacing`, and any script whose letters join or reorder:
+//! shaping here is one glyph after another at its own advance.
 //! [`unsupported`] names what a given style loses, the same way the renderer
 //! reports undrawn layer types.
 //!
-//! Placement is per tile. A label near an edge is placed without knowing what
-//! its neighbour placed, so the same name can appear twice across a seam or
-//! not at all. Fixing that needs placement to run over a viewport rather than
-//! a tile, which is a different shape of renderer.
+//! Placement is still per tile, but no longer blind: a tile is given the ring
+//! of neighbours around it, so a label at an edge is placed knowing what its
+//! neighbours hold, and both sides of a seam reach the same verdict because
+//! every decision is keyed on the label's position in the world rather than
+//! on the order it arrived in. What that does not give is a viewport-wide
+//! contest: a name can still be drawn once per tile-and-its-ring rather than
+//! once per screen, which shows as the same name twice a few tiles apart.
+//! Fixing that needs placement to run over a viewport, which is a different
+//! shape of renderer.
 
 use tiny_skia::Pixmap;
 
