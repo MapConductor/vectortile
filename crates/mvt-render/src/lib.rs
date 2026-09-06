@@ -112,6 +112,9 @@ pub struct Renderer {
     /// once. Reads are the common case by far, so a read/write lock rather
     /// than a mutex.
     glyphs: std::sync::RwLock<text::GlyphStore>,
+    /// Neighbouring tiles decoded for their labels, kept so the ring around a
+    /// tile is decoded once between the nine tiles that want it.
+    label_tiles: std::sync::RwLock<Vec<(LabelTileKey, std::sync::Arc<model::Tile>)>>,
     /// The style's sprite sheet, once the host has fetched it. One sheet
     /// covers the whole style, so unlike glyphs there is nothing to accumulate
     /// -- it is either loaded or it is not.
@@ -145,6 +148,13 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
 
+/// Which tile of which source a cached decode belongs to.
+type LabelTileKey = (String, u8, u32, u32);
+
+/// How many neighbour decodes to keep. A screen is a dozen tiles and each
+/// wants the eight around it, so this is about two screens' worth of ring.
+const LABEL_TILE_CACHE: usize = 48;
+
 /// Where a style's sprite sheet lives: an index and the image it indexes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpriteRequest {
@@ -157,6 +167,7 @@ impl Renderer {
         Ok(Renderer {
             style: Style::parse(style_json)?,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
+            label_tiles: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
         })
     }
@@ -165,6 +176,7 @@ impl Renderer {
         Renderer {
             style,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
+            label_tiles: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
         }
     }
@@ -416,6 +428,12 @@ impl Renderer {
             if bytes.is_empty() {
                 continue;
             }
+            // Neighbours are in the plan for the label pass, which happens on
+            // the CPU afterwards; there is nothing here to tessellate from
+            // them.
+            if request.labels_only {
+                continue;
+            }
             let Ok(tile) = mvt::decode(bytes) else {
                 continue;
             };
@@ -492,6 +510,7 @@ impl Renderer {
             &decoded,
             &store,
             sprites.as_ref(),
+            (x, y),
         )
         .ok_or(RenderError::BadTileSize(tile_size))
     }
@@ -515,9 +534,12 @@ impl Renderer {
         let paint_scale = tile_size as f32 / 512.0;
         let labels = symbol::collect(
             &self.style,
-            z as f64,
-            tile_size,
-            paint_scale,
+            symbol::Target {
+                zoom: z as f64,
+                tile_size,
+                paint_scale,
+                xy: (0, 0),
+            },
             decoded,
             &store,
             sprites.as_ref(),
@@ -525,6 +547,61 @@ impl Renderer {
         symbol::place(labels)
             .iter()
             .map(|label| label.paint.size)
+            .collect()
+    }
+
+    fn cached_label_tile(&self, key: &LabelTileKey) -> Option<std::sync::Arc<model::Tile>> {
+        let cache = self.label_tiles.read().ok()?;
+        cache
+            .iter()
+            .find(|(cached, _)| cached == key)
+            .map(|(_, tile)| tile.clone())
+    }
+
+    fn remember_label_tile(&self, key: LabelTileKey, tile: std::sync::Arc<model::Tile>) {
+        let Ok(mut cache) = self.label_tiles.write() else {
+            return;
+        };
+        cache.retain(|(cached, _)| cached != &key);
+        cache.insert(0, (key, tile));
+        cache.truncate(LABEL_TILE_CACHE);
+    }
+
+    /// Every label this tile places, with what it says and where it lands.
+    /// For working out why one is missing.
+    #[doc(hidden)]
+    pub fn label_report(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        tile_data: &[Option<&[u8]>],
+    ) -> Vec<(String, [f32; 4])> {
+        let Ok(store) = self.glyphs.read() else {
+            return Vec::new();
+        };
+        let Ok(sprites) = self.sprites.read() else {
+            return Vec::new();
+        };
+        let plan = self.plan(z, x, y);
+        let decoded = self.decode_plan(&plan, tile_data);
+        let paint_scale = tile_size as f32 / 512.0;
+        let labels = symbol::collect(
+            &self.style,
+            symbol::Target {
+                zoom: z as f64,
+                tile_size,
+                paint_scale,
+                xy: (x, y),
+            },
+            &decoded,
+            &store,
+            sprites.as_ref(),
+        );
+        symbol::place(labels)
+            .into_iter()
+            .map(|label| (label.content, label.bounds))
             .collect()
     }
 
@@ -569,9 +646,12 @@ impl Renderer {
         let paint_scale = tile_size as f32 / 512.0;
         let labels = symbol::collect(
             &self.style,
-            z as f64,
-            tile_size,
-            paint_scale,
+            symbol::Target {
+                zoom: z as f64,
+                tile_size,
+                paint_scale,
+                xy: (x, y),
+            },
             &decoded,
             &store,
             sprites.as_ref(),
@@ -597,6 +677,12 @@ impl Renderer {
     /// Decodes whatever arrived for a plan, in the plan's own order.
     fn decode_plan(&self, plan: &TilePlan, tile_data: &[Option<&[u8]>]) -> Vec<DecodedTile> {
         let mut decoded = Vec::with_capacity(plan.requests.len());
+        // Worked out once: a neighbour is decoded for its labels alone.
+        let symbol_layers = if plan.requests.iter().any(|r| r.labels_only) {
+            self.style.symbol_source_layers(plan.zoom_hint())
+        } else {
+            Default::default()
+        };
         for (request, data) in plan.requests.iter().zip(tile_data.iter().chain(
             // Tolerate a short array rather than failing the whole tile.
             std::iter::repeat(&None),
@@ -607,8 +693,28 @@ impl Renderer {
             }
             // A corrupt tile from one source must not blank the whole tile;
             // skip it and draw whatever else arrived.
-            let Ok(tile) = mvt::decode(bytes) else {
-                continue;
+            let tile = if request.labels_only {
+                let key = (request.source_id.clone(), request.z, request.x, request.y);
+                match self.cached_label_tile(&key) {
+                    Some(tile) => tile,
+                    None => {
+                        let wanted = symbol_layers
+                            .get(&request.source_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let Ok(tile) = mvt::decode_only(bytes, &wanted) else {
+                            continue;
+                        };
+                        let tile = std::sync::Arc::new(tile);
+                        self.remember_label_tile(key, tile.clone());
+                        tile
+                    }
+                }
+            } else {
+                let Ok(tile) = mvt::decode(bytes) else {
+                    continue;
+                };
+                std::sync::Arc::new(tile)
             };
             decoded.push(DecodedTile {
                 source_id: request.source_id.clone(),
@@ -616,6 +722,7 @@ impl Renderer {
                 scale: request.scale,
                 offset_x: request.offset_x,
                 offset_y: request.offset_y,
+                labels_only: request.labels_only,
             });
         }
         decoded
@@ -835,12 +942,14 @@ mod tests {
 
         let decoded = vec![DecodedTile {
             source_id: "src".into(),
-            tile: Tile {
+            tile: std::sync::Arc::new(Tile {
                 layers: vec![layer],
-            },
+            }),
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         }];
 
         let (pixmap, stats) = raster::render(&test_style(), 10.0, 512, &decoded).expect("render");
@@ -1328,7 +1437,35 @@ mod tests {
     fn plan_matches_the_positional_render_contract() {
         let renderer = Renderer::from_style(test_style());
         let plan = renderer.plan(10, 512, 300);
+
+        // The tile itself comes first, and the host feeds the bytes back in
+        // this order.
+        assert_eq!(plan.urls()[0], "https://example.com/10/512/300.pbf");
+        assert!(!plan.requests[0].labels_only);
+
+        // Then its eight neighbours, wanted only for labels that straddle an
+        // edge. The style here has a symbol layer; one without would ask for
+        // the tile alone.
+        assert_eq!(plan.requests.len(), 9);
+        assert!(plan.requests[1..].iter().all(|r| r.labels_only));
+        assert!(plan.urls().contains(&"https://example.com/10/511/299.pbf"));
+        assert!(plan.urls().contains(&"https://example.com/10/513/301.pbf"));
+    }
+
+    /// Neighbours are only worth fetching for labels, so a style that draws
+    /// none must not pay for them.
+    #[test]
+    fn asks_for_no_neighbours_without_symbol_layers() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": { "src": { "type": "vector", "tiles": ["https://example.com/{z}/{x}/{y}.pbf"] } },
+            "layers": [
+                { "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
+                  "paint": { "fill-color": "#ffffff" } }
+            ]
+        }))
+        .unwrap();
+        let plan = Renderer::from_style(style).plan(10, 512, 300);
         assert_eq!(plan.requests.len(), 1);
-        assert_eq!(plan.urls(), vec!["https://example.com/10/512/300.pbf"]);
     }
 }

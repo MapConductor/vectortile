@@ -22,11 +22,18 @@ const REFERENCE_TILE_SIZE: f32 = 512.0;
 /// A source tile that has been fetched and decoded, ready to draw.
 pub struct DecodedTile {
     pub source_id: String,
-    pub tile: model::Tile,
+    /// Shared, because a neighbour's labels are wanted by every tile around
+    /// it and decoding the same bytes nine times is most of what the ring
+    /// costs.
+    pub tile: std::sync::Arc<model::Tile>,
     /// Magnification when this tile stands in for a deeper zoom level.
     pub scale: f32,
     pub offset_x: f32,
     pub offset_y: f32,
+    /// A neighbour, here so that a label straddling the edge can be drawn
+    /// whole. Its geometry is skipped: this tile's own copy already has it,
+    /// and drawing it twice would only cost time.
+    pub labels_only: bool,
 }
 
 pub struct RenderStats {
@@ -41,7 +48,15 @@ pub fn render(
     tile_size: u32,
     decoded: &[DecodedTile],
 ) -> Option<(Pixmap, RenderStats)> {
-    render_with_glyphs(style, zoom, tile_size, decoded, &GlyphStore::new(), None)
+    render_with_glyphs(
+        style,
+        zoom,
+        tile_size,
+        decoded,
+        &GlyphStore::new(),
+        None,
+        (0, 0),
+    )
 }
 
 /// Renders one target tile, with labels if glyphs were supplied.
@@ -89,6 +104,7 @@ pub fn render_with_glyphs(
     decoded: &[DecodedTile],
     glyphs: &GlyphStore,
     sprites: Option<&crate::sprite::SpriteSheet>,
+    tile_xy: (u32, u32),
 ) -> Option<(Pixmap, RenderStats)> {
     let mut pixmap = Pixmap::new(tile_size, tile_size)?;
     let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
@@ -115,7 +131,12 @@ pub fn render_with_glyphs(
         let Some(source_layer_name) = layer.source_layer.as_deref() else {
             continue;
         };
-        let Some(decoded_tile) = decoded.iter().find(|d| d.source_id == source_id) else {
+        // The neighbours in `decoded` are here for the label pass; this tile's
+        // own copy of the ground is the one that gets drawn.
+        let Some(decoded_tile) = decoded
+            .iter()
+            .find(|d| d.source_id == source_id && !d.labels_only)
+        else {
             continue;
         };
         let Some(data_layer) = decoded_tile.tile.layer(source_layer_name) else {
@@ -143,9 +164,12 @@ pub fn render_with_glyphs(
     if !glyphs.is_empty() || sprites.is_some_and(|sheet| !sheet.is_empty()) {
         let labels = symbol::collect(
             style,
-            zoom,
-            tile_size,
-            paint_scale,
+            symbol::Target {
+                zoom,
+                tile_size,
+                paint_scale,
+                xy: tile_xy,
+            },
             decoded,
             glyphs,
             sprites,

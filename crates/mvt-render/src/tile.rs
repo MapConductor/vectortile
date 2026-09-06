@@ -16,6 +16,10 @@ pub struct SourceTileRequest {
     /// Where the target tile sits inside the fetched tile, in 0..1 units.
     pub offset_x: f32,
     pub offset_y: f32,
+    /// A neighbouring tile, fetched only so that a label straddling the edge
+    /// can be drawn whole. Its geometry is not drawn -- this tile's own copy
+    /// already covers the ground.
+    pub labels_only: bool,
 }
 
 impl SourceTileRequest {
@@ -40,6 +44,17 @@ impl TilePlan {
     pub fn is_empty(&self) -> bool {
         self.requests.is_empty()
     }
+
+    /// The zoom this plan was made for, taken from its own requests.
+    ///
+    /// A magnified tile records the zoom it was fetched at, not the one it is
+    /// drawn at, so the target zoom is that plus the magnification.
+    pub fn zoom_hint(&self) -> f64 {
+        self.requests
+            .first()
+            .map(|r| r.z as f64 + (r.scale.max(1.0)).log2() as f64)
+            .unwrap_or(0.0)
+    }
 }
 
 /// Builds the fetch list for target tile `z/x/y`.
@@ -50,6 +65,7 @@ impl TilePlan {
 pub fn plan_tile(style: &Style, z: u8, x: u32, y: u32) -> TilePlan {
     let zoom = z as f64;
     let mut requests = Vec::new();
+    let wants_labels = style.symbol_source_layers(zoom);
 
     for source in style.active_vector_sources(zoom) {
         if source.tiles.is_empty() {
@@ -78,7 +94,52 @@ pub fn plan_tile(style: &Style, z: u8, x: u32, y: u32) -> TilePlan {
             scale,
             offset_x,
             offset_y,
+            labels_only: false,
         });
+
+        // A label belongs to whichever tile holds the point it names, and the
+        // tile generator clips those points to the tile: measured on a real
+        // shortbread tile, the buffer around the edge carries lines and
+        // polygons but not one single point. So a name anchored near an edge
+        // is drawn by its own tile, cut off at the edge, and the neighbour
+        // never knew about it. Fetching the ring of neighbours is what lets
+        // the other half be drawn.
+        //
+        // Not needed when the tile is magnified from a shallower one: the
+        // neighbours are then inside the same fetched tile already.
+        if scale > 1.0 || !wants_labels.contains_key(&source.id) {
+            continue;
+        }
+        let span = 1u32 << src_z;
+        for dy in -1i32..=1 {
+            for dx in -1i32..=1 {
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                // Wrapping east to west is right; there is no tile above the
+                // north pole.
+                let nx = (src_x as i64 + dx as i64).rem_euclid(span as i64) as u32;
+                let ny = src_y as i64 + dy as i64;
+                if ny < 0 || ny >= span as i64 {
+                    continue;
+                }
+                let ny = ny as u32;
+                let template = pick_template(&source.tiles, nx, ny);
+                requests.push(SourceTileRequest {
+                    source_id: source.id.clone(),
+                    url: expand_template(template, src_z, nx, ny),
+                    z: src_z,
+                    x: nx,
+                    y: ny,
+                    scale,
+                    // Shifted by a whole tile, so the neighbour's features
+                    // land where they belong relative to this one.
+                    offset_x: offset_x - dx as f32 / scale,
+                    offset_y: offset_y - dy as f32 / scale,
+                    labels_only: true,
+                });
+            }
+        }
     }
 
     TilePlan { requests }

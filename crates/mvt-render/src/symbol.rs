@@ -97,6 +97,10 @@ pub struct Label {
     /// name is not.
     pub icon_optional: bool,
     pub text_optional: bool,
+    /// What the label says, and where it is in the world rather than in this
+    /// tile. Together they identify the same name arriving twice.
+    pub content: String,
+    pub world_at: (i64, i64),
     /// Room to keep clear around it, from `text-padding` or `icon-padding`.
     /// Per label rather than per pass: arrows repeated along a road are meant
     /// to sit closer together than two place names ever should.
@@ -155,44 +159,47 @@ pub fn needed_glyphs(
         else {
             continue;
         };
-        let Some(decoded_tile) = decoded.iter().find(|d| d.source_id == source_id) else {
-            continue;
-        };
-        let Some(data_layer) = decoded_tile.tile.layer(source_layer_name) else {
-            continue;
-        };
-        let filter = CompiledFilter::compile(layer.filter.as_ref(), data_layer, zoom);
-        if filter.never_matches() {
-            continue;
-        }
-
-        for feature in &data_layer.features {
-            if !filter.matches(data_layer, feature) {
+        // Every tile carrying this source, which is this tile and the
+        // neighbours it borrowed for labels that cross an edge. Asking only
+        // the first would leave a borrowed label with no font to draw it in --
+        // and, worse, would let the tile call itself finished without one.
+        for decoded_tile in decoded.iter().filter(|d| d.source_id == source_id) {
+            let Some(data_layer) = decoded_tile.tile.layer(source_layer_name) else {
+                continue;
+            };
+            let filter = CompiledFilter::compile(layer.filter.as_ref(), data_layer, zoom);
+            if filter.never_matches() {
                 continue;
             }
-            let ctx = Ctx {
-                zoom,
-                layer: Some(data_layer),
-                feature: Some(feature),
-            };
-            let Some(text) = text_field(layer, &ctx) else {
-                continue;
-            };
-            for range in GlyphStore::ranges_for(&text) {
-                for ch in text.chars() {
-                    if (ch as u32) / 256 != range {
-                        continue;
-                    }
-                    // Only ask for a range if no face in the stack already has
-                    // this character.
-                    if store.glyph(&fonts, ch as u32).is_none() {
-                        for font in &fonts {
-                            let entry = (font.clone(), range);
-                            if !wanted.contains(&entry) {
-                                wanted.push(entry);
-                            }
+
+            for feature in &data_layer.features {
+                if !filter.matches(data_layer, feature) {
+                    continue;
+                }
+                let ctx = Ctx {
+                    zoom,
+                    layer: Some(data_layer),
+                    feature: Some(feature),
+                };
+                let Some(text) = text_field(layer, &ctx) else {
+                    continue;
+                };
+                for range in GlyphStore::ranges_for(&text) {
+                    for ch in text.chars() {
+                        if (ch as u32) / 256 != range {
+                            continue;
                         }
-                        break;
+                        // Only ask for a range if no face in the stack already has
+                        // this character.
+                        if store.glyph(&fonts, ch as u32).is_none() {
+                            for font in &fonts {
+                                let entry = (font.clone(), range);
+                                if !wanted.contains(&entry) {
+                                    wanted.push(entry);
+                                }
+                            }
+                            break;
+                        }
                     }
                 }
             }
@@ -208,15 +215,35 @@ pub fn needed_glyphs(
 }
 
 /// Shapes every label the style asks for in this tile, in layer order.
+/// Where and at what size a tile is being drawn.
+#[derive(Debug, Clone, Copy)]
+pub struct Target {
+    pub zoom: f64,
+    pub tile_size: u32,
+    /// Output pixels per style pixel.
+    pub paint_scale: f32,
+    /// Which tile this is, so a label can be identified by where it is in the
+    /// world rather than by where it falls on this particular tile.
+    pub xy: (u32, u32),
+}
+
 pub fn collect(
     style: &Style,
-    zoom: f64,
-    tile_size: u32,
-    paint_scale: f32,
+    target: Target,
     decoded: &[crate::raster::DecodedTile],
     store: &GlyphStore,
     sprites: Option<&SpriteSheet>,
 ) -> Vec<Label> {
+    let Target {
+        zoom,
+        tile_size,
+        paint_scale,
+        xy: tile_xy,
+    } = target;
+    let origin = (
+        tile_xy.0 as f64 * tile_size as f64,
+        tile_xy.1 as f64 * tile_size as f64,
+    );
     let mut labels = Vec::new();
     // Nothing to draw labels *with*. A style whose symbols are all icons can
     // still draw them, which is why this is not a test of the glyph store
@@ -246,176 +273,192 @@ pub fn collect(
         let Some(source_layer_name) = layer.source_layer.as_deref() else {
             continue;
         };
-        let Some(decoded_tile) = decoded.iter().find(|d| d.source_id == source_id) else {
-            continue;
-        };
-        let Some(data_layer) = decoded_tile.tile.layer(source_layer_name) else {
-            continue;
-        };
-
-        let filter = CompiledFilter::compile(layer.filter.as_ref(), data_layer, zoom);
-        if filter.never_matches() {
-            continue;
-        }
-
         let fonts = font_stack(layer, &zoom_ctx);
-        for feature in &data_layer.features {
-            if !filter.matches(data_layer, feature) {
+        // This tile and every neighbour that came with it. A label belongs to
+        // whichever tile holds the point it names, so the half that reaches
+        // across an edge can only be drawn from the neighbour's own copy.
+        for decoded_tile in decoded.iter().filter(|d| d.source_id == source_id) {
+            let Some(data_layer) = decoded_tile.tile.layer(source_layer_name) else {
+                continue;
+            };
+
+            let filter = CompiledFilter::compile(layer.filter.as_ref(), data_layer, zoom);
+            if filter.never_matches() {
                 continue;
             }
-            let ctx = Ctx {
-                zoom,
-                layer: Some(data_layer),
-                feature: Some(feature),
-            };
-            // One symbol at the feature's anchor, or a run of them along it.
-            let spots: Vec<(f32, f32, f32)> = if along_a_line {
-                let spacing =
-                    layer.layout_number("symbol-spacing", &ctx, 250.0) as f32 * paint_scale;
-                let keep_upright = layer
-                    .layout_value("icon-keep-upright", &ctx)
-                    .map(|v| v.truthy())
-                    .unwrap_or(false);
-                line_anchors(
-                    feature,
-                    decoded_tile,
-                    data_layer.extent,
-                    tile_size,
-                    spacing,
-                    keep_upright,
-                )
-            } else {
-                anchor_point(feature, decoded_tile, data_layer.extent, tile_size)
-                    .map(|at| vec![(at.0, at.1, 0.0)])
-                    .unwrap_or_default()
-            };
 
-            for (ax, ay, angle) in spots {
-                let anchor_point = (ax, ay);
-
-                let content = if along_a_line {
-                    None
-                } else {
-                    text_field(layer, &ctx)
-                        .map(|raw| {
-                            transform_case(&raw, layer.layout_string("text-transform", &ctx))
-                        })
-                        .filter(|content| !content.trim().is_empty())
-                };
-
-                let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
-                // Measured on screen: `size` is in this tile's pixels, and a
-                // tile rasterised small is drawn back up to size.
-                let readable = paint_scale > 0.0 && size / paint_scale >= MIN_TEXT_SIZE;
-                let shaped = match &content {
-                    Some(content) if readable => {
-                        let max_width = layer.layout_number("text-max-width", &ctx, 10.0) as f32;
-                        text::shape(content, &fonts, store, max_width)
-                    }
-                    _ => Shaped::default(),
-                };
-
-                let anchor = layer
-                    .layout_string("text-anchor", &ctx)
-                    .map(|a| Anchor::from_str(&a))
-                    .unwrap_or(Anchor::Center);
-                // `text-offset` is in ems, so it scales with the text.
-                let (ox, oy) = layout_offset(layer, &ctx);
-                let at = (anchor_point.0 + ox * size, anchor_point.1 + oy * size);
-
-                let opacity = layer.paint_number("text-opacity", &ctx, 1.0) as f32;
-                let paint = TextPaint {
-                    size,
-                    color: layer.paint_color("text-color", &ctx, Color::BLACK),
-                    halo_color: layer.paint_color("text-halo-color", &ctx, Color::TRANSPARENT),
-                    halo_width: layer.paint_number("text-halo-width", &ctx, 0.0) as f32
-                        * paint_scale,
-                    opacity,
-                };
-
-                let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
-                    None
-                } else {
-                    Some(text::bounds(&shaped, &paint, anchor, at))
-                };
-
-                // After the text, because `icon-text-fit` sizes the icon around
-                // it: a shield is only as wide as the number it carries.
-                let icon = icon_placement(
-                    layer,
-                    &ctx,
-                    sprites,
-                    paint_scale,
-                    Spot {
-                        at: anchor_point,
-                        angle,
-                        along_a_line,
-                    },
-                    text_bounds,
-                );
-
-                // A symbol with neither its glyphs nor its icon yet is not a
-                // label; it would reserve space for nothing and push its
-                // neighbours out of the way.
-                if (shaped.is_empty() || opacity <= 0.0) && icon.is_none() {
+            for feature in &data_layer.features {
+                if !filter.matches(data_layer, feature) {
                     continue;
                 }
-
-                let icon_bounds = icon.as_ref().and_then(|placement| {
-                    sprites
-                        .and_then(|sheet| sheet.icon(&placement.name))
-                        .map(|icon| {
-                            sprite::bounds(icon, &placement.paint, placement.anchor, placement.at)
-                        })
-                });
-                let Some(bounds) = union(text_bounds, icon_bounds) else {
-                    continue;
+                let ctx = Ctx {
+                    zoom,
+                    layer: Some(data_layer),
+                    feature: Some(feature),
                 };
-
-                let allow_overlap = layer
-                    .layout_value("text-allow-overlap", &ctx)
-                    .map(|v| v.truthy())
-                    .unwrap_or(false)
-                    || layer
-                        .layout_value("icon-allow-overlap", &ctx)
+                // One symbol at the feature's anchor, or a run of them along it.
+                let spots: Vec<(f32, f32, f32)> = if along_a_line {
+                    let spacing =
+                        layer.layout_number("symbol-spacing", &ctx, 250.0) as f32 * paint_scale;
+                    let keep_upright = layer
+                        .layout_value("icon-keep-upright", &ctx)
                         .map(|v| v.truthy())
                         .unwrap_or(false);
-
-                // `symbol-avoid-edges` is how a style says a symbol must not be
-                // cut in half at a tile seam. Every tile here is drawn without
-                // sight of its neighbours, so honouring it also stops the two
-                // sides drawing the same arrow twice.
-                if avoid_edges(layer, &ctx) && leaves_tile(bounds, tile_size) {
-                    continue;
-                }
-
-                let padding = if icon.is_some() && shaped.is_empty() {
-                    layer.layout_number("icon-padding", &ctx, 2.0) as f32 * paint_scale
+                    line_anchors(
+                        feature,
+                        decoded_tile,
+                        data_layer.extent,
+                        tile_size,
+                        spacing,
+                        keep_upright,
+                    )
                 } else {
-                    layer.layout_number("text-padding", &ctx, 2.0) as f32 * paint_scale
+                    anchor_point(feature, decoded_tile, data_layer.extent, tile_size)
+                        .map(|at| vec![(at.0, at.1, 0.0)])
+                        .unwrap_or_default()
                 };
 
-                labels.push(Label {
-                    shaped,
-                    fonts: fonts.clone(),
-                    paint,
-                    anchor,
-                    at,
-                    icon,
-                    bounds,
-                    text_bounds,
-                    icon_bounds,
-                    icon_optional: layer
-                        .layout_value("icon-optional", &ctx)
+                for (ax, ay, angle) in spots {
+                    let anchor_point = (ax, ay);
+
+                    let content = if along_a_line {
+                        None
+                    } else {
+                        text_field(layer, &ctx)
+                            .map(|raw| {
+                                transform_case(&raw, layer.layout_string("text-transform", &ctx))
+                            })
+                            .filter(|content| !content.trim().is_empty())
+                    };
+
+                    let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
+                    // Measured on screen: `size` is in this tile's pixels, and a
+                    // tile rasterised small is drawn back up to size.
+                    let readable = paint_scale > 0.0 && size / paint_scale >= MIN_TEXT_SIZE;
+                    let shaped = match &content {
+                        Some(content) if readable => {
+                            let max_width =
+                                layer.layout_number("text-max-width", &ctx, 10.0) as f32;
+                            text::shape(content, &fonts, store, max_width)
+                        }
+                        _ => Shaped::default(),
+                    };
+
+                    let anchor = layer
+                        .layout_string("text-anchor", &ctx)
+                        .map(|a| Anchor::from_str(&a))
+                        .unwrap_or(Anchor::Center);
+                    // `text-offset` is in ems, so it scales with the text.
+                    let (ox, oy) = layout_offset(layer, &ctx);
+                    let at = (anchor_point.0 + ox * size, anchor_point.1 + oy * size);
+
+                    let opacity = layer.paint_number("text-opacity", &ctx, 1.0) as f32;
+                    let paint = TextPaint {
+                        size,
+                        color: layer.paint_color("text-color", &ctx, Color::BLACK),
+                        halo_color: layer.paint_color("text-halo-color", &ctx, Color::TRANSPARENT),
+                        halo_width: layer.paint_number("text-halo-width", &ctx, 0.0) as f32
+                            * paint_scale,
+                        opacity,
+                    };
+
+                    let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
+                        None
+                    } else {
+                        Some(text::bounds(&shaped, &paint, anchor, at))
+                    };
+
+                    // After the text, because `icon-text-fit` sizes the icon around
+                    // it: a shield is only as wide as the number it carries.
+                    let icon = icon_placement(
+                        layer,
+                        &ctx,
+                        sprites,
+                        paint_scale,
+                        Spot {
+                            at: anchor_point,
+                            angle,
+                            along_a_line,
+                        },
+                        text_bounds,
+                    );
+
+                    // A symbol with neither its glyphs nor its icon yet is not a
+                    // label; it would reserve space for nothing and push its
+                    // neighbours out of the way.
+                    if (shaped.is_empty() || opacity <= 0.0) && icon.is_none() {
+                        continue;
+                    }
+
+                    let icon_bounds = icon.as_ref().and_then(|placement| {
+                        sprites
+                            .and_then(|sheet| sheet.icon(&placement.name))
+                            .map(|icon| {
+                                sprite::bounds(
+                                    icon,
+                                    &placement.paint,
+                                    placement.anchor,
+                                    placement.at,
+                                )
+                            })
+                    });
+                    let Some(bounds) = union(text_bounds, icon_bounds) else {
+                        continue;
+                    };
+
+                    let allow_overlap = layer
+                        .layout_value("text-allow-overlap", &ctx)
                         .map(|v| v.truthy())
-                        .unwrap_or(false),
-                    text_optional: layer
-                        .layout_value("text-optional", &ctx)
-                        .map(|v| v.truthy())
-                        .unwrap_or(false),
-                    padding,
-                    allow_overlap,
-                });
+                        .unwrap_or(false)
+                        || layer
+                            .layout_value("icon-allow-overlap", &ctx)
+                            .map(|v| v.truthy())
+                            .unwrap_or(false);
+
+                    // `symbol-avoid-edges` is how a style says a symbol must not
+                    // be cut in half at a tile seam.
+                    if avoid_edges(layer, &ctx) && leaves_tile(bounds, tile_size) {
+                        continue;
+                    }
+                    // Most of a neighbour's tile is of no interest here; what is,
+                    // is the label near the shared edge that reaches across it.
+                    if !touches_tile(bounds, tile_size) {
+                        continue;
+                    }
+
+                    let padding = if icon.is_some() && shaped.is_empty() {
+                        layer.layout_number("icon-padding", &ctx, 2.0) as f32 * paint_scale
+                    } else {
+                        layer.layout_number("text-padding", &ctx, 2.0) as f32 * paint_scale
+                    };
+
+                    labels.push(Label {
+                        content: content.unwrap_or_default(),
+                        world_at: (
+                            (origin.0 + at.0 as f64).round() as i64,
+                            (origin.1 + at.1 as f64).round() as i64,
+                        ),
+                        shaped,
+                        fonts: fonts.clone(),
+                        paint,
+                        anchor,
+                        at,
+                        icon,
+                        bounds,
+                        text_bounds,
+                        icon_bounds,
+                        icon_optional: layer
+                            .layout_value("icon-optional", &ctx)
+                            .map(|v| v.truthy())
+                            .unwrap_or(false),
+                        text_optional: layer
+                            .layout_value("text-optional", &ctx)
+                            .map(|v| v.truthy())
+                            .unwrap_or(false),
+                        padding,
+                        allow_overlap,
+                    });
+                }
             }
         }
     }
@@ -427,6 +470,12 @@ fn avoid_edges(layer: &Layer, ctx: &Ctx) -> bool {
         .layout_value("symbol-avoid-edges", ctx)
         .map(|v| v.truthy())
         .unwrap_or(false)
+}
+
+/// Whether any of the label lands on this tile at all.
+fn touches_tile(bounds: [f32; 4], tile_size: u32) -> bool {
+    let size = tile_size as f32;
+    bounds[2] > 0.0 && bounds[3] > 0.0 && bounds[0] < size && bounds[1] < size
 }
 
 fn leaves_tile(bounds: [f32; 4], tile_size: u32) -> bool {
@@ -523,6 +572,7 @@ fn to_pixels(
 /// collision: the boxes include the halo's bleed, and text that nearly
 /// overlaps reads worse than text that is missing.
 pub fn place(labels: Vec<Label>) -> Vec<Label> {
+    let labels = drop_repeats(labels);
     let mut kept: Vec<Label> = Vec::new();
     for mut label in labels {
         if label.allow_overlap {
@@ -567,6 +617,64 @@ pub fn place(labels: Vec<Label>) -> Vec<Label> {
         }
     }
     kept
+}
+
+/// How far apart two copies of the same name can be and still be the same
+/// place, in pixels.
+///
+/// A district's polygon is cut at every tile it crosses, and each piece has
+/// its own middle, so the same name arrives once per piece. Anything within a
+/// tile of another copy is one of those; two towns that genuinely share a name
+/// are not this close.
+const REPEAT_DISTANCE: f64 = 512.0;
+
+/// Drops the extra copies of a name that tile clipping produced.
+///
+/// The copy kept is the one nearest the top-left of the world, which is a
+/// silly-sounding rule with one essential property: every tile that can see
+/// this name picks the same copy. Keeping "the one from my own tile" would
+/// have each tile keep a different copy and draw it, which is the duplicate
+/// this is meant to remove.
+fn drop_repeats(labels: Vec<Label>) -> Vec<Label> {
+    let mut winners: Vec<(usize, (i64, i64))> = Vec::new();
+    let mut dropped = vec![false; labels.len()];
+
+    for (index, label) in labels.iter().enumerate() {
+        if label.content.is_empty() {
+            continue;
+        }
+        let mut replaced = None;
+        for (other, at) in winners.iter_mut() {
+            if labels[*other].content != label.content {
+                continue;
+            }
+            let dx = (at.0 - label.world_at.0) as f64;
+            let dy = (at.1 - label.world_at.1) as f64;
+            if dx.hypot(dy) > REPEAT_DISTANCE {
+                continue;
+            }
+            if label.world_at < *at {
+                dropped[*other] = true;
+                *other = index;
+                *at = label.world_at;
+            } else {
+                replaced = Some(());
+            }
+            break;
+        }
+        if replaced.is_some() {
+            dropped[index] = true;
+        } else if !dropped[index] && !winners.iter().any(|(i, _)| *i == index) {
+            winners.push((index, label.world_at));
+        }
+    }
+
+    labels
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| !dropped[*index])
+        .map(|(_, label)| label)
+        .collect()
 }
 
 pub fn draw(
@@ -902,8 +1010,10 @@ fn anchor_point(
 
     let size = tile_size as f32;
     let (px, py) = to_pixels(x, y, decoded, extent, tile_size);
-    // A label whose anchor is well outside the tile belongs to a neighbour.
-    let margin = size * 0.25;
+    // Half a tile: far enough to catch a neighbour's label that reaches in,
+    // near enough to skip the rest of the neighbour's tile early. What
+    // actually reaches in is decided later, from the label's own box.
+    let margin = size * 0.5;
     if px < -margin || py < -margin || px > size + margin || py > size + margin {
         return None;
     }
@@ -919,7 +1029,7 @@ mod tests {
 
     /// Builds a one-feature tile through the real encoder and decoder, so the
     /// test exercises the same path a served tile takes.
-    fn point_tile(layer: &str, name: &str, x: i32, y: i32) -> model::Tile {
+    fn point_tile(layer: &str, name: &str, x: i32, y: i32) -> std::sync::Arc<model::Tile> {
         let bytes = encode_tile(&[LayerSpec {
             name: layer.into(),
             extent: 4096,
@@ -929,7 +1039,7 @@ mod tests {
                 props: vec![("name".into(), name.into())],
             }],
         }]);
-        crate::mvt::decode(&bytes).expect("fixture decodes")
+        std::sync::Arc::new(crate::mvt::decode(&bytes).expect("fixture decodes"))
     }
 
     fn glyph(code: u32, advance: u32) -> Glyph {
@@ -957,6 +1067,121 @@ mod tests {
         let mut s = GlyphStore::new();
         s.insert(stack);
         s
+    }
+
+    /// A name anchored just inside one tile spills across the seam, and the
+    /// neighbour has to draw the other half. It can only do that if the
+    /// neighbour's data is offered to it, which is what a labels-only tile is.
+    #[test]
+    fn draws_the_half_of_a_neighbours_label_that_reaches_in() {
+        let style = Style::parse(
+            r##"{
+                "version": 8,
+                "sources": { "src": { "type": "vector" } },
+                "layers": [{
+                    "id": "places", "type": "symbol", "source": "src",
+                    "source-layer": "place",
+                    "layout": { "text-field": "{name}", "text-font": ["F"], "text-size": 20 }
+                }]
+            }"##,
+        )
+        .expect("style parses");
+        let store = store(&[0x41, 0x42]);
+
+        // The label sits five pixels inside the western neighbour's east
+        // edge, so most of it belongs on this tile. The neighbour is offered
+        // shifted a whole tile to the left.
+        let west = crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile: point_tile("place", "AB", 4096 - 40, 2048),
+            scale: 1.0,
+            offset_x: 1.0,
+            offset_y: 0.0,
+            labels_only: true,
+        };
+        let placed = collect(
+            &style,
+            Target {
+                zoom: 12.0,
+                tile_size: 512,
+                paint_scale: 1.0,
+                xy: (1, 0),
+            },
+            &[west],
+            &store,
+            None,
+        );
+        assert_eq!(placed.len(), 1, "the neighbour's label was not picked up");
+        assert!(
+            placed[0].bounds[0] < 0.0 && placed[0].bounds[2] > 0.0,
+            "expected it to straddle the edge, got {:?}",
+            placed[0].bounds
+        );
+
+        // One in the middle of the neighbour reaches nothing here and is not
+        // worth carrying.
+        let far = crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile: point_tile("place", "AB", 2048, 2048),
+            scale: 1.0,
+            offset_x: 1.0,
+            offset_y: 0.0,
+            labels_only: true,
+        };
+        assert!(collect(
+            &style,
+            Target {
+                zoom: 12.0,
+                tile_size: 512,
+                paint_scale: 1.0,
+                xy: (1, 0)
+            },
+            &[far],
+            &store,
+            None
+        )
+        .is_empty());
+    }
+
+    /// A district's polygon is cut at every tile it crosses and each piece
+    /// gets its own label, so the same name arrives more than once. Dropping
+    /// "the ones that are not mine" would have each tile keep a different one
+    /// and draw it -- the duplicate would survive. Every tile has to choose
+    /// the same copy.
+    #[test]
+    fn every_tile_drops_the_same_duplicate() {
+        let here = |x: f32, world: (i64, i64)| {
+            let mut l = label(x, 100.0, 60.0, 20.0, false);
+            l.content = "港区".into();
+            l.world_at = world;
+            l
+        };
+
+        // Tile A sees its own copy at world 5000 and the neighbour's at 5300.
+        let from_a = place(vec![here(100.0, (5000, 100)), here(400.0, (5300, 100))]);
+        // Tile B sees the same two, in the other order and shifted into its
+        // own pixels.
+        let from_b = place(vec![here(-100.0, (5300, 100)), here(-400.0, (5000, 100))]);
+
+        assert_eq!(from_a.len(), 1);
+        assert_eq!(from_b.len(), 1);
+        assert_eq!(
+            from_a[0].world_at, from_b[0].world_at,
+            "the two tiles kept different copies, so the name is still drawn twice"
+        );
+    }
+
+    /// Two places that really do share a name are not a duplicate.
+    #[test]
+    fn keeps_two_distant_places_with_the_same_name() {
+        let far = |x: f32, world: (i64, i64)| {
+            let mut l = label(x, 100.0, 60.0, 20.0, true);
+            l.content = "中央区".into();
+            l.world_at = world;
+            l
+        };
+        let kept = place(vec![far(100.0, (5000, 100)), far(400.0, (9000, 100))]);
+        assert_eq!(kept.len(), 2);
     }
 
     /// Text too small to read is worse than no text: it is a smudge that also
@@ -987,18 +1212,44 @@ mod tests {
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         }];
         let store = store(&[0x41, 0x42]);
 
         let readable = style(12.0);
         assert_eq!(
-            collect(&readable, 12.0, 512, 1.0, &decoded, &store, None).len(),
+            collect(
+                &readable,
+                Target {
+                    zoom: 12.0,
+                    tile_size: 512,
+                    paint_scale: 1.0,
+                    xy: (0, 0)
+                },
+                &decoded,
+                &store,
+                None
+            )
+            .len(),
             1
         );
 
         let tiny = style(4.0);
         assert!(
-            collect(&tiny, 12.0, 512, 1.0, &decoded, &store, None).is_empty(),
+            collect(
+                &tiny,
+                Target {
+                    zoom: 12.0,
+                    tile_size: 512,
+                    paint_scale: 1.0,
+                    xy: (0, 0)
+                },
+                &decoded,
+                &store,
+                None
+            )
+            .is_empty(),
             "4 pixels of text is a smudge"
         );
         assert!(
@@ -1032,11 +1283,24 @@ mod tests {
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         }];
         let store = store(&[0x41, 0x42]);
 
         // Half-size tile: the label is drawn at four pixels and kept.
-        let half = collect(&style, 12.0, 256, 0.5, &decoded, &store, None);
+        let half = collect(
+            &style,
+            Target {
+                zoom: 12.0,
+                tile_size: 256,
+                paint_scale: 0.5,
+                xy: (0, 0),
+            },
+            &decoded,
+            &store,
+            None,
+        );
         assert_eq!(half.len(), 1);
         assert!((half[0].paint.size - 4.0).abs() < 0.01);
     }
@@ -1076,28 +1340,20 @@ mod tests {
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         }];
 
-        let visible = collect(
-            &style(0.5),
-            12.0,
-            512,
-            1.0,
-            &decoded,
-            &store(&[]),
-            Some(&sheet),
-        );
+        let target = Target {
+            zoom: 12.0,
+            tile_size: 512,
+            paint_scale: 1.0,
+            xy: (0, 0),
+        };
+        let visible = collect(&style(0.5), target, &decoded, &store(&[]), Some(&sheet));
         assert_eq!(visible.len(), 1, "16 pixels is an icon");
 
-        let speck = collect(
-            &style(0.05),
-            12.0,
-            512,
-            1.0,
-            &decoded,
-            &store(&[]),
-            Some(&sheet),
-        );
+        let speck = collect(&style(0.05), target, &decoded, &store(&[]), Some(&sheet));
         assert!(speck.is_empty(), "1.6 pixels is a speck");
     }
 
@@ -1148,13 +1404,15 @@ mod tests {
                 props: vec![],
             }],
         }]);
-        let tile = crate::mvt::decode(&bytes).expect("decodes");
+        let tile = std::sync::Arc::new(crate::mvt::decode(&bytes).expect("decodes"));
         let decoded = crate::raster::DecodedTile {
             source_id: "src".into(),
             tile,
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         };
         let feature = &decoded.tile.layers[0].features[0];
 
@@ -1182,13 +1440,15 @@ mod tests {
                 props: vec![],
             }],
         }]);
-        let tile = crate::mvt::decode(&bytes).expect("decodes");
+        let tile = std::sync::Arc::new(crate::mvt::decode(&bytes).expect("decodes"));
         let decoded = crate::raster::DecodedTile {
             source_id: "src".into(),
             tile,
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         };
         let feature = &decoded.tile.layers[0].features[0];
 
@@ -1216,13 +1476,15 @@ mod tests {
                 props: vec![],
             }],
         }]);
-        let tile = crate::mvt::decode(&bytes).expect("decodes");
+        let tile = std::sync::Arc::new(crate::mvt::decode(&bytes).expect("decodes"));
         let decoded = crate::raster::DecodedTile {
             source_id: "src".into(),
             tile,
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         };
         let feature = &decoded.tile.layers[0].features[0];
 
@@ -1282,17 +1544,22 @@ mod tests {
         }]);
         let decoded = vec![crate::raster::DecodedTile {
             source_id: "src".into(),
-            tile: crate::mvt::decode(&bytes).expect("fixture decodes"),
+            tile: std::sync::Arc::new(crate::mvt::decode(&bytes).expect("fixture decodes")),
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         }];
 
         let labels = collect(
             &style,
-            12.0,
-            512,
-            1.0,
+            Target {
+                zoom: 12.0,
+                tile_size: 512,
+                paint_scale: 1.0,
+                xy: (0, 0),
+            },
             &decoded,
             &store(&[0x41]),
             Some(&sheet),
@@ -1334,6 +1601,8 @@ mod tests {
             icon_bounds: None,
             icon_optional: false,
             text_optional: false,
+            content: String::new(),
+            world_at: (x as i64, y as i64),
             padding: 0.0,
             allow_overlap,
         }
@@ -1426,9 +1695,22 @@ mod tests {
             scale: 1.0,
             offset_x: 0.0,
             offset_y: 0.0,
+
+            labels_only: false,
         }];
 
-        let labels = collect(&style, 12.0, 512, 1.0, &decoded, &store, None);
+        let labels = collect(
+            &style,
+            Target {
+                zoom: 12.0,
+                tile_size: 512,
+                paint_scale: 1.0,
+                xy: (0, 0),
+            },
+            &decoded,
+            &store,
+            None,
+        );
         assert_eq!(labels.len(), 1);
         // The point sits at half the 4096 extent, so the middle of the tile.
         assert!((labels[0].at.0 - 256.0).abs() < 1.0);
@@ -1451,7 +1733,18 @@ mod tests {
             }"##,
         )
         .unwrap();
-        let labels = collect(&style, 12.0, 512, 1.0, &[], &GlyphStore::new(), None);
+        let labels = collect(
+            &style,
+            Target {
+                zoom: 12.0,
+                tile_size: 512,
+                paint_scale: 1.0,
+                xy: (0, 0),
+            },
+            &[],
+            &GlyphStore::new(),
+            None,
+        );
         assert!(labels.is_empty());
     }
 }

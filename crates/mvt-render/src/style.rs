@@ -401,6 +401,30 @@ impl Style {
         out
     }
 
+    /// The `source-layer` names the visible symbol layers read at this zoom,
+    /// grouped by source.
+    ///
+    /// Used to decode a neighbouring tile for its labels alone: everything
+    /// else in it is already drawn from this tile's own copy.
+    pub fn symbol_source_layers(&self, zoom: f64) -> BTreeMap<String, Vec<String>> {
+        let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for layer in &self.layers {
+            if layer.kind != LayerKind::Symbol || !layer.is_visible() || !layer.applies_at(zoom) {
+                continue;
+            }
+            let (Some(source), Some(source_layer)) =
+                (layer.source.as_deref(), layer.source_layer.as_deref())
+            else {
+                continue;
+            };
+            let names = out.entry(source.to_string()).or_default();
+            if !names.iter().any(|n| n == source_layer) {
+                names.push(source_layer.to_string());
+            }
+        }
+        out
+    }
+
     /// Layer `type` values that were parsed but will not be drawn.
     pub fn unsupported_layer_types(&self) -> Vec<String> {
         let mut kinds: Vec<String> = self

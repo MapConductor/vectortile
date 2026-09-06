@@ -11,11 +11,21 @@ fn main() {
 
     let renderer = mvt_render::Renderer::new(&style_json).unwrap();
     let plan = renderer.plan(zoom, 0, 0);
-    println!("plan: {} sources", plan.requests.len());
+    println!(
+        "plan: {} requests ({} of them neighbours, for labels)",
+        plan.requests.len(),
+        plan.requests.iter().filter(|r| r.labels_only).count()
+    );
+    // The same bytes stand in for every neighbour, which is wrong
+    // geographically and exactly right for measuring the cost.
     let data: Vec<Option<&[u8]>> = plan.requests.iter().map(|_| Some(&tile[..])).collect();
 
     let needed = renderer.needed_glyphs(zoom, 0, 0, &data);
     println!("glyph ranges wanted: {}", needed.len());
+    // 文 is U+6587, in the 25856-26111 range: the character missing from
+    // 文京区 on screen.
+    let wants_that_range = needed.iter().any(|r| r.range_start == 25856);
+    println!("asks for the range holding 文: {wants_that_range}");
 
     // Ranges come from a directory the caller filled, so this stays offline.
     if let Some(dir) = std::env::args().nth(4) {

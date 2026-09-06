@@ -129,6 +129,20 @@ fn zigzag(n: u64) -> i64 {
 
 /// Decodes a `.pbf` vector tile.
 pub fn decode(buf: &[u8]) -> Result<Tile> {
+    decode_filtered(buf, None)
+}
+
+/// Decodes only the layers named, and skips the rest without reading them.
+///
+/// A tile is mostly roads and buildings by weight, and the label pass wants
+/// neither. When a tile is decoded only to find the labels near its edge --
+/// which is what the eight neighbours of every tile are decoded for -- paying
+/// for the geometry as well is most of the cost for none of the answer.
+pub fn decode_only(buf: &[u8], wanted: &[String]) -> Result<Tile> {
+    decode_filtered(buf, Some(wanted))
+}
+
+fn decode_filtered(buf: &[u8], wanted: Option<&[String]>) -> Result<Tile> {
     let mut reader = Reader::new(buf);
     let mut tile = Tile::default();
     while !reader.done() {
@@ -137,12 +151,34 @@ pub fn decode(buf: &[u8]) -> Result<Tile> {
             // Tile.layers
             (3, 2) => {
                 let bytes = reader.length_delimited()?;
+                if let Some(wanted) = wanted {
+                    // The name is the layer's first field, so this reads a
+                    // few bytes and moves on.
+                    match layer_name(bytes) {
+                        Some(name) if wanted.iter().any(|w| w == &name) => {}
+                        _ => continue,
+                    }
+                }
                 tile.layers.push(decode_layer(bytes)?);
             }
             _ => reader.skip(wire)?,
         }
     }
     Ok(tile)
+}
+
+/// Reads just a layer's name out of its bytes.
+fn layer_name(buf: &[u8]) -> Option<String> {
+    let mut reader = Reader::new(buf);
+    while !reader.done() {
+        let (field, wire) = reader.tag().ok()?;
+        if field == 1 && wire == 2 {
+            let bytes = reader.length_delimited().ok()?;
+            return Some(String::from_utf8_lossy(bytes).into_owned());
+        }
+        reader.skip(wire).ok()?;
+    }
+    None
 }
 
 fn decode_layer(buf: &[u8]) -> Result<Layer> {
