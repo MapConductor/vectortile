@@ -496,6 +496,38 @@ impl Renderer {
         .ok_or(RenderError::BadTileSize(tile_size))
     }
 
+    /// The em size of every label this tile would place, in target pixels.
+    ///
+    /// For measurement rather than drawing: a claim about labels being too
+    /// small to read is worth checking against what the pass actually
+    /// produces.
+    #[doc(hidden)]
+    pub fn label_sizes(&self, z: u8, tile_size: u32, tile_data: &[Option<&[u8]>]) -> Vec<f32> {
+        let plan = self.plan(z, 0, 0);
+        let decoded = self.decode_plan(&plan, tile_data);
+        let decoded = &decoded[..];
+        let Ok(store) = self.glyphs.read() else {
+            return Vec::new();
+        };
+        let Ok(sprites) = self.sprites.read() else {
+            return Vec::new();
+        };
+        let paint_scale = tile_size as f32 / 512.0;
+        let labels = symbol::collect(
+            &self.style,
+            z as f64,
+            tile_size,
+            paint_scale,
+            decoded,
+            &store,
+            sprites.as_ref(),
+        );
+        symbol::place(labels)
+            .iter()
+            .map(|label| label.paint.size)
+            .collect()
+    }
+
     /// Draws this tile's labels onto an RGBA buffer someone else rasterised.
     ///
     /// The GPU path tessellates fills and lines and knows nothing about

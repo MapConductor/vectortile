@@ -36,6 +36,21 @@ use crate::sprite::{self, IconPaint, SpriteSheet};
 use crate::style::{Layer, LayerKind, Style};
 use crate::text::{self, Anchor, GlyphStore, Shaped, TextPaint};
 
+/// Below this, in the style's own pixels, a label is not read -- it is a
+/// smudge that still takes room from its neighbours and still costs a font
+/// range to fetch.
+///
+/// The size is measured on screen rather than in the tile's pixels on purpose.
+/// A tile rasterised at half size draws the same label at half the pixels, but
+/// the map then draws that tile at twice the size, so the label is exactly as
+/// big to the reader and only softer. Dropping it there would take away
+/// something legible.
+pub const MIN_TEXT_SIZE: f32 = 6.0;
+
+/// Same idea for an icon, measured on its longer side. A 32-pixel glyph shrunk
+/// to two or three pixels is a speck.
+pub const MIN_ICON_SIZE: f32 = 3.0;
+
 /// Where a symbol goes and which way it faces.
 ///
 /// A point symbol has one of these; a line-placed one has a run of them, each
@@ -128,6 +143,11 @@ pub fn needed_glyphs(
         let zoom_ctx = Ctx::zoom_only(zoom);
         let fonts = font_stack(layer, &zoom_ctx);
         if fonts.is_empty() {
+            continue;
+        }
+        // A range is a round trip; there is no sense in one for text this
+        // pass has already decided not to draw.
+        if (layer.layout_number("text-size", &zoom_ctx, 16.0) as f32) < MIN_TEXT_SIZE {
             continue;
         }
         let (Some(source_id), Some(source_layer_name)) =
@@ -271,125 +291,131 @@ pub fn collect(
             };
 
             for (ax, ay, angle) in spots {
-            let anchor_point = (ax, ay);
+                let anchor_point = (ax, ay);
 
-            let content = if along_a_line {
-                None
-            } else {
-                text_field(layer, &ctx)
-                    .map(|raw| transform_case(&raw, layer.layout_string("text-transform", &ctx)))
-                    .filter(|content| !content.trim().is_empty())
-            };
+                let content = if along_a_line {
+                    None
+                } else {
+                    text_field(layer, &ctx)
+                        .map(|raw| {
+                            transform_case(&raw, layer.layout_string("text-transform", &ctx))
+                        })
+                        .filter(|content| !content.trim().is_empty())
+                };
 
-            let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
-            let shaped = match &content {
-                Some(content) if size > 0.0 => {
-                    let max_width = layer.layout_number("text-max-width", &ctx, 10.0) as f32;
-                    text::shape(content, &fonts, store, max_width)
+                let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
+                // Measured on screen: `size` is in this tile's pixels, and a
+                // tile rasterised small is drawn back up to size.
+                let readable = paint_scale > 0.0 && size / paint_scale >= MIN_TEXT_SIZE;
+                let shaped = match &content {
+                    Some(content) if readable => {
+                        let max_width = layer.layout_number("text-max-width", &ctx, 10.0) as f32;
+                        text::shape(content, &fonts, store, max_width)
+                    }
+                    _ => Shaped::default(),
+                };
+
+                let anchor = layer
+                    .layout_string("text-anchor", &ctx)
+                    .map(|a| Anchor::from_str(&a))
+                    .unwrap_or(Anchor::Center);
+                // `text-offset` is in ems, so it scales with the text.
+                let (ox, oy) = layout_offset(layer, &ctx);
+                let at = (anchor_point.0 + ox * size, anchor_point.1 + oy * size);
+
+                let opacity = layer.paint_number("text-opacity", &ctx, 1.0) as f32;
+                let paint = TextPaint {
+                    size,
+                    color: layer.paint_color("text-color", &ctx, Color::BLACK),
+                    halo_color: layer.paint_color("text-halo-color", &ctx, Color::TRANSPARENT),
+                    halo_width: layer.paint_number("text-halo-width", &ctx, 0.0) as f32
+                        * paint_scale,
+                    opacity,
+                };
+
+                let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
+                    None
+                } else {
+                    Some(text::bounds(&shaped, &paint, anchor, at))
+                };
+
+                // After the text, because `icon-text-fit` sizes the icon around
+                // it: a shield is only as wide as the number it carries.
+                let icon = icon_placement(
+                    layer,
+                    &ctx,
+                    sprites,
+                    paint_scale,
+                    Spot {
+                        at: anchor_point,
+                        angle,
+                        along_a_line,
+                    },
+                    text_bounds,
+                );
+
+                // A symbol with neither its glyphs nor its icon yet is not a
+                // label; it would reserve space for nothing and push its
+                // neighbours out of the way.
+                if (shaped.is_empty() || opacity <= 0.0) && icon.is_none() {
+                    continue;
                 }
-                _ => Shaped::default(),
-            };
 
-            let anchor = layer
-                .layout_string("text-anchor", &ctx)
-                .map(|a| Anchor::from_str(&a))
-                .unwrap_or(Anchor::Center);
-            // `text-offset` is in ems, so it scales with the text.
-            let (ox, oy) = layout_offset(layer, &ctx);
-            let at = (anchor_point.0 + ox * size, anchor_point.1 + oy * size);
+                let icon_bounds = icon.as_ref().and_then(|placement| {
+                    sprites
+                        .and_then(|sheet| sheet.icon(&placement.name))
+                        .map(|icon| {
+                            sprite::bounds(icon, &placement.paint, placement.anchor, placement.at)
+                        })
+                });
+                let Some(bounds) = union(text_bounds, icon_bounds) else {
+                    continue;
+                };
 
-            let opacity = layer.paint_number("text-opacity", &ctx, 1.0) as f32;
-            let paint = TextPaint {
-                size,
-                color: layer.paint_color("text-color", &ctx, Color::BLACK),
-                halo_color: layer.paint_color("text-halo-color", &ctx, Color::TRANSPARENT),
-                halo_width: layer.paint_number("text-halo-width", &ctx, 0.0) as f32 * paint_scale,
-                opacity,
-            };
-
-            let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
-                None
-            } else {
-                Some(text::bounds(&shaped, &paint, anchor, at))
-            };
-
-            // After the text, because `icon-text-fit` sizes the icon around
-            // it: a shield is only as wide as the number it carries.
-            let icon = icon_placement(
-                layer,
-                &ctx,
-                sprites,
-                paint_scale,
-                Spot {
-                    at: anchor_point,
-                    angle,
-                    along_a_line,
-                },
-                text_bounds,
-            );
-
-            // A symbol with neither its glyphs nor its icon yet is not a
-            // label; it would reserve space for nothing and push its
-            // neighbours out of the way.
-            if (shaped.is_empty() || opacity <= 0.0) && icon.is_none() {
-                continue;
-            }
-
-            let icon_bounds = icon.as_ref().and_then(|placement| {
-                sprites
-                    .and_then(|sheet| sheet.icon(&placement.name))
-                    .map(|icon| {
-                        sprite::bounds(icon, &placement.paint, placement.anchor, placement.at)
-                    })
-            });
-            let Some(bounds) = union(text_bounds, icon_bounds) else {
-                continue;
-            };
-
-            let allow_overlap = layer
-                .layout_value("text-allow-overlap", &ctx)
-                .map(|v| v.truthy())
-                .unwrap_or(false)
-                || layer
-                    .layout_value("icon-allow-overlap", &ctx)
+                let allow_overlap = layer
+                    .layout_value("text-allow-overlap", &ctx)
                     .map(|v| v.truthy())
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    || layer
+                        .layout_value("icon-allow-overlap", &ctx)
+                        .map(|v| v.truthy())
+                        .unwrap_or(false);
 
-            // `symbol-avoid-edges` is how a style says a symbol must not be
-            // cut in half at a tile seam. Every tile here is drawn without
-            // sight of its neighbours, so honouring it also stops the two
-            // sides drawing the same arrow twice.
-            if avoid_edges(layer, &ctx) && leaves_tile(bounds, tile_size) {
-                continue;
-            }
+                // `symbol-avoid-edges` is how a style says a symbol must not be
+                // cut in half at a tile seam. Every tile here is drawn without
+                // sight of its neighbours, so honouring it also stops the two
+                // sides drawing the same arrow twice.
+                if avoid_edges(layer, &ctx) && leaves_tile(bounds, tile_size) {
+                    continue;
+                }
 
-            let padding = if icon.is_some() && shaped.is_empty() {
-                layer.layout_number("icon-padding", &ctx, 2.0) as f32 * paint_scale
-            } else {
-                layer.layout_number("text-padding", &ctx, 2.0) as f32 * paint_scale
-            };
+                let padding = if icon.is_some() && shaped.is_empty() {
+                    layer.layout_number("icon-padding", &ctx, 2.0) as f32 * paint_scale
+                } else {
+                    layer.layout_number("text-padding", &ctx, 2.0) as f32 * paint_scale
+                };
 
-            labels.push(Label {
-                shaped,
-                fonts: fonts.clone(),
-                paint,
-                anchor,
-                at,
-                icon,
-                bounds,
-                text_bounds,
-                icon_bounds,
-                icon_optional: layer
-                    .layout_value("icon-optional", &ctx)
-                    .map(|v| v.truthy())
-                    .unwrap_or(false),
-                text_optional: layer
-                    .layout_value("text-optional", &ctx)
-                    .map(|v| v.truthy())
-                    .unwrap_or(false),
-                padding,
-                allow_overlap,
-            });
+                labels.push(Label {
+                    shaped,
+                    fonts: fonts.clone(),
+                    paint,
+                    anchor,
+                    at,
+                    icon,
+                    bounds,
+                    text_bounds,
+                    icon_bounds,
+                    icon_optional: layer
+                        .layout_value("icon-optional", &ctx)
+                        .map(|v| v.truthy())
+                        .unwrap_or(false),
+                    text_optional: layer
+                        .layout_value("text-optional", &ctx)
+                        .map(|v| v.truthy())
+                        .unwrap_or(false),
+                    padding,
+                    allow_overlap,
+                });
             }
         }
     }
@@ -506,9 +532,9 @@ pub fn place(labels: Vec<Label>) -> Vec<Label> {
 
         let fits = |bounds: [f32; 4], padding: f32, kept: &[Label]| {
             let grown = grow(bounds, padding);
-            !kept
-                .iter()
-                .any(|other| !other.allow_overlap && overlaps(grown, grow(other.bounds, other.padding)))
+            !kept.iter().any(|other| {
+                !other.allow_overlap && overlaps(grown, grow(other.bounds, other.padding))
+            })
         };
 
         if fits(label.bounds, label.padding, &kept) {
@@ -648,6 +674,11 @@ fn icon_placement(
     if size <= 0.0 {
         return None;
     }
+    let icon_entry = sheet.icon(&name)?;
+    let (natural_w, natural_h) = icon_entry.display_size();
+    if natural_w.max(natural_h) * size < MIN_ICON_SIZE {
+        return None;
+    }
     let opacity = layer.paint_number("icon-opacity", ctx, 1.0) as f32;
     if opacity <= 0.0 {
         return None;
@@ -661,7 +692,6 @@ fn icon_placement(
     // `icon-text-fit` resizes the icon around its label, which is how one
     // shield in a sheet serves every route number. The icon then sits on the
     // text rather than on the feature's own point.
-    let icon_entry = sheet.icon(&name)?;
     let fitted = text_fit(layer, ctx, icon_entry, scale, paint_scale, text_bounds);
     Some(IconPlacement {
         name,
@@ -765,7 +795,10 @@ fn text_fit(
 /// point -- and this renderer draws north-up, so a viewport-aligned icon is
 /// left with only its own `icon-rotate`.
 fn map_aligned(layer: &Layer, ctx: &Ctx, along_a_line: bool) -> bool {
-    match layer.layout_string("icon-rotation-alignment", ctx).as_deref() {
+    match layer
+        .layout_string("icon-rotation-alignment", ctx)
+        .as_deref()
+    {
         Some("map") => true,
         Some("viewport") => false,
         // `auto` means map on a line and viewport at a point, which is also
@@ -926,6 +959,148 @@ mod tests {
         s
     }
 
+    /// Text too small to read is worse than no text: it is a smudge that also
+    /// takes room from its neighbours and costs a font range to fetch.
+    #[test]
+    fn drops_text_too_small_to_read() {
+        let style = |size: f64| {
+            Style::parse(&format!(
+                r##"{{
+                    "version": 8,
+                    "glyphs": "https://example.com/{{fontstack}}/{{range}}.pbf",
+                    "sources": {{ "src": {{ "type": "vector" }} }},
+                    "layers": [{{
+                        "id": "places", "type": "symbol", "source": "src",
+                        "source-layer": "place",
+                        "layout": {{
+                            "text-field": "{{name}}", "text-font": ["F"],
+                            "text-size": {size}
+                        }}
+                    }}]
+                }}"##
+            ))
+            .expect("style parses")
+        };
+        let decoded = vec![crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile: point_tile("place", "AB", 2048, 2048),
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }];
+        let store = store(&[0x41, 0x42]);
+
+        let readable = style(12.0);
+        assert_eq!(
+            collect(&readable, 12.0, 512, 1.0, &decoded, &store, None).len(),
+            1
+        );
+
+        let tiny = style(4.0);
+        assert!(
+            collect(&tiny, 12.0, 512, 1.0, &decoded, &store, None).is_empty(),
+            "4 pixels of text is a smudge"
+        );
+        assert!(
+            needed_glyphs(&tiny, 12.0, &decoded, &GlyphStore::new()).is_empty(),
+            "and it must not send anyone to fetch a font for it"
+        );
+    }
+
+    /// The floor is about how big the label is to the reader, not how many
+    /// pixels this particular tile happens to have. A tile rasterised at half
+    /// size is drawn at twice the size, so its labels are exactly as legible
+    /// and only softer -- dropping them there would take away something the
+    /// reader can read.
+    #[test]
+    fn measures_legibility_on_screen_not_in_tile_pixels() {
+        let style = Style::parse(
+            r##"{
+                "version": 8,
+                "sources": { "src": { "type": "vector" } },
+                "layers": [{
+                    "id": "places", "type": "symbol", "source": "src",
+                    "source-layer": "place",
+                    "layout": { "text-field": "{name}", "text-font": ["F"], "text-size": 8 }
+                }]
+            }"##,
+        )
+        .expect("style parses");
+        let decoded = vec![crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile: point_tile("place", "AB", 2048, 2048),
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }];
+        let store = store(&[0x41, 0x42]);
+
+        // Half-size tile: the label is drawn at four pixels and kept.
+        let half = collect(&style, 12.0, 256, 0.5, &decoded, &store, None);
+        assert_eq!(half.len(), 1);
+        assert!((half[0].paint.size - 4.0).abs() < 0.01);
+    }
+
+    /// A 32-pixel icon shrunk to a speck is not information either.
+    #[test]
+    fn drops_icons_too_small_to_make_out() {
+        use crate::sprite::SpriteSheet;
+
+        let mut image = Pixmap::new(32, 32).expect("pixmap");
+        for slot in image.pixels_mut().iter_mut() {
+            *slot = tiny_skia::ColorU8::from_rgba(0, 0, 0, 255).premultiply();
+        }
+        let sheet = SpriteSheet::parse(
+            r#"{"pin": {"x": 0, "y": 0, "width": 32, "height": 32, "pixelRatio": 1}}"#,
+            &image.encode_png().expect("encode"),
+        )
+        .expect("sheet");
+
+        let style = |icon_size: f64| {
+            Style::parse(&format!(
+                r##"{{
+                    "version": 8,
+                    "sources": {{ "src": {{ "type": "vector" }} }},
+                    "layers": [{{
+                        "id": "pois", "type": "symbol", "source": "src",
+                        "source-layer": "place",
+                        "layout": {{ "icon-image": "pin", "icon-size": {icon_size} }}
+                    }}]
+                }}"##
+            ))
+            .expect("style parses")
+        };
+        let decoded = vec![crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile: point_tile("place", "AB", 2048, 2048),
+            scale: 1.0,
+            offset_x: 0.0,
+            offset_y: 0.0,
+        }];
+
+        let visible = collect(
+            &style(0.5),
+            12.0,
+            512,
+            1.0,
+            &decoded,
+            &store(&[]),
+            Some(&sheet),
+        );
+        assert_eq!(visible.len(), 1, "16 pixels is an icon");
+
+        let speck = collect(
+            &style(0.05),
+            12.0,
+            512,
+            1.0,
+            &decoded,
+            &store(&[]),
+            Some(&sheet),
+        );
+        assert!(speck.is_empty(), "1.6 pixels is a speck");
+    }
+
     /// `icon-optional` is a style saying the pin is expendable and the name is
     /// not. Dropping both is the wrong answer, and so is keeping both.
     #[test]
@@ -1018,7 +1193,11 @@ mod tests {
         let feature = &decoded.tile.layers[0].features[0];
 
         let facing = line_anchors(feature, &decoded, 4096, 512, 200.0, false);
-        assert!((facing[0].2.abs() - 180.0).abs() < 0.5, "got {:?}", facing[0]);
+        assert!(
+            (facing[0].2.abs() - 180.0).abs() < 0.5,
+            "got {:?}",
+            facing[0]
+        );
 
         let upright = line_anchors(feature, &decoded, 4096, 512, 200.0, true);
         assert!(upright[0].2.abs() < 0.5, "got {:?}", upright[0]);
@@ -1109,7 +1288,15 @@ mod tests {
             offset_y: 0.0,
         }];
 
-        let labels = collect(&style, 12.0, 512, 1.0, &decoded, &store(&[0x41]), Some(&sheet));
+        let labels = collect(
+            &style,
+            12.0,
+            512,
+            1.0,
+            &decoded,
+            &store(&[0x41]),
+            Some(&sheet),
+        );
         assert_eq!(labels.len(), 2, "both were collected");
         assert!(labels[0].icon.is_some(), "the icon travels with the label");
         // The box has to cover the icon, not just the text, or two pins would
@@ -1121,7 +1308,11 @@ mod tests {
         );
 
         let placed = place(labels);
-        assert_eq!(placed.len(), 1, "the second symbol collided and was dropped");
+        assert_eq!(
+            placed.len(),
+            1,
+            "the second symbol collided and was dropped"
+        );
     }
 
     fn label(x: f32, y: f32, w: f32, h: f32, allow_overlap: bool) -> Label {
@@ -1151,10 +1342,10 @@ mod tests {
     #[test]
     fn drops_a_label_that_covers_one_already_kept() {
         let kept = place(vec![
-                label(0.0, 0.0, 50.0, 20.0, false),
-                label(10.0, 5.0, 50.0, 20.0, false),
-                label(200.0, 200.0, 50.0, 20.0, false),
-            ]);
+            label(0.0, 0.0, 50.0, 20.0, false),
+            label(10.0, 5.0, 50.0, 20.0, false),
+            label(200.0, 200.0, 50.0, 20.0, false),
+        ]);
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].at, (0.0, 0.0));
         assert_eq!(kept[1].at, (200.0, 200.0));
@@ -1165,9 +1356,9 @@ mod tests {
     #[test]
     fn keeps_labels_that_allow_overlap() {
         let kept = place(vec![
-                label(0.0, 0.0, 50.0, 20.0, false),
-                label(0.0, 0.0, 50.0, 20.0, true),
-            ]);
+            label(0.0, 0.0, 50.0, 20.0, false),
+            label(0.0, 0.0, 50.0, 20.0, true),
+        ]);
         assert_eq!(kept.len(), 2);
     }
 
