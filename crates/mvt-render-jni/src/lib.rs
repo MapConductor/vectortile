@@ -198,6 +198,9 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeRen
     tile_size: jint,
     data: JByteArray,
     lengths: JIntArray,
+    // Non-zero leaves labels and icons out, for a host that draws them on a
+    // separate layer stacked above this one.
+    geometry_only: jint,
 ) -> jbyteArray {
     guarded(&mut env, std::ptr::null_mut(), |env| {
         let Some(renderer) = (unsafe { renderer(handle) }) else {
@@ -249,7 +252,12 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeRen
             offset = end;
         }
 
-        let png = match renderer.render(z as u8, x as u32, y as u32, tile_size as u32, &slices) {
+        let rendered = if geometry_only != 0 {
+            renderer.render_geometry(z as u8, x as u32, y as u32, tile_size as u32, &slices)
+        } else {
+            renderer.render(z as u8, x as u32, y as u32, tile_size as u32, &slices)
+        };
+        let png = match rendered {
             Ok(png) => png,
             Err(error) => {
                 throw(env, RUNTIME_EXCEPTION, &error.to_string());
@@ -838,7 +846,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeRen
     lengths: JIntArray,
 ) -> jbyteArray {
     Java_com_mapconductor_vectortile_NativeRenderer_nativeRender(
-        env, class, handle, z, x, y, tile_size, data, lengths,
+        env, class, handle, z, x, y, tile_size, data, lengths, 0,
     )
 }
 

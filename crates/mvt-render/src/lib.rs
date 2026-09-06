@@ -488,6 +488,41 @@ impl Renderer {
         tile_size: u32,
         tile_data: &[Option<&[u8]>],
     ) -> Result<(tiny_skia::Pixmap, RenderStats), RenderError> {
+        self.render_pixmap_inner(z, x, y, tile_size, tile_data, true)
+    }
+
+    /// Renders the tile's geometry alone: fills, lines, circles, patterns --
+    /// everything except labels and icons.
+    ///
+    /// For a host that stacks two tile layers: a geometry layer that never
+    /// changes once drawn, and a label layer above it that alone is refreshed
+    /// when glyphs arrive. Splitting them means glyphs invalidate the cheap
+    /// transparent overlay rather than the whole picture.
+    pub fn render_geometry(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        tile_data: &[Option<&[u8]>],
+    ) -> Result<Vec<u8>, RenderError> {
+        let pixmap = self
+            .render_pixmap_inner(z, x, y, tile_size, tile_data, false)?
+            .0;
+        pixmap
+            .encode_png()
+            .map_err(|e| RenderError::Decode(e.to_string()))
+    }
+
+    fn render_pixmap_inner(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        tile_data: &[Option<&[u8]>],
+        with_labels: bool,
+    ) -> Result<(tiny_skia::Pixmap, RenderStats), RenderError> {
         if tile_size == 0 || tile_size > 8192 {
             return Err(RenderError::BadTileSize(tile_size));
         }
@@ -495,21 +530,30 @@ impl Renderer {
         let plan = self.plan(z, x, y);
         let decoded = self.decode_plan(&plan, tile_data);
 
-        let store = self
-            .glyphs
-            .read()
-            .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
-        let sprites = self
-            .sprites
-            .read()
-            .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
+        let empty_store = text::GlyphStore::new();
+        let store;
+        let sprites;
+        let (store_ref, sprites_ref): (&text::GlyphStore, Option<&sprite::SpriteSheet>) =
+            if with_labels {
+                store = self
+                    .glyphs
+                    .read()
+                    .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
+                sprites = self
+                    .sprites
+                    .read()
+                    .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
+                (&store, sprites.as_ref())
+            } else {
+                (&empty_store, None)
+            };
         raster::render_with_glyphs(
             &self.style,
             z as f64,
             tile_size,
             &decoded,
-            &store,
-            sprites.as_ref(),
+            store_ref,
+            sprites_ref,
             (x, y),
         )
         .ok_or(RenderError::BadTileSize(tile_size))
@@ -641,8 +685,11 @@ impl Renderer {
             return Ok(0);
         }
 
+        let t0 = std::time::Instant::now();
         let plan = self.plan(z, x, y);
         let decoded = self.decode_plan_labels(&plan, tile_data);
+        let decode_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        let t1 = std::time::Instant::now();
         let paint_scale = tile_size as f32 / 512.0;
         let labels = symbol::collect(
             &self.style,
@@ -657,6 +704,7 @@ impl Renderer {
             sprites.as_ref(),
         );
         let placed = symbol::place(labels);
+        let collect_ms = t1.elapsed().as_secs_f32() * 1000.0;
         if placed.is_empty() {
             return Ok(0);
         }
@@ -668,9 +716,17 @@ impl Renderer {
         // premultiplied data and rejects anything else, and a readback whose
         // alpha is saturated is both at once. Copying sidesteps having to
         // prove that at the type level for a buffer that came from GL.
+        let t2 = std::time::Instant::now();
         pixmap.data_mut().copy_from_slice(rgba);
         symbol::draw(&mut pixmap, &placed, &store, sprites.as_ref());
         rgba.copy_from_slice(pixmap.data());
+        if std::env::var("MVT_PROFILE").is_ok() {
+            eprintln!(
+                "LABELPHASE decode={decode_ms:.1} collect={collect_ms:.1} draw={:.1} n={}",
+                t2.elapsed().as_secs_f32() * 1000.0,
+                placed.len()
+            );
+        }
         Ok(placed.len())
     }
 
