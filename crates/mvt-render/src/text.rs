@@ -295,39 +295,97 @@ pub fn draw(
     let scale = paint.size / GLYPH_SIZE;
     let [left, top, _, _] = bounds(shaped, paint, anchor, at);
 
+    let fill = Ink {
+        origin: (left, top),
+        scale,
+        color: paint.color,
+        opacity: paint.opacity,
+        halo: None,
+        rotation: 0.0,
+    };
     if paint.halo_width > 0.0 {
+        let halo = Ink {
+            color: paint.halo_color,
+            halo: Some(Halo {
+                width: paint.halo_width,
+                blur: paint.halo_blur,
+            }),
+            ..fill
+        };
         for placed in &shaped.glyphs {
             if let Some(glyph) = store.glyph(fonts, placed.code) {
-                blit(
-                    pixmap,
-                    glyph,
-                    placed,
-                    left,
-                    top,
-                    scale,
-                    paint.halo_color,
-                    paint.opacity,
-                    Some(Halo {
-                        width: paint.halo_width,
-                        blur: paint.halo_blur,
-                    }),
-                );
+                blit(pixmap, glyph, placed, &halo);
             }
         }
     }
     for placed in &shaped.glyphs {
         if let Some(glyph) = store.glyph(fonts, placed.code) {
-            blit(
-                pixmap,
-                glyph,
-                placed,
-                left,
-                top,
-                scale,
-                paint.color,
-                paint.opacity,
-                None,
-            );
+            blit(pixmap, glyph, placed, &fill);
+        }
+    }
+}
+
+/// One glyph laid on a line: where its pen sits and which way it faces.
+#[derive(Debug, Clone, Copy)]
+pub struct GlyphOnLine {
+    pub code: u32,
+    pub at: (f32, f32),
+    /// Clockwise degrees, from the direction of the line under it.
+    pub angle: f32,
+}
+
+/// Draws a label that follows a line, glyph by glyph.
+///
+/// A road name cannot be laid out once and stamped down: each letter sits at
+/// its own place along the curve and faces its own way, so the run is walked
+/// rather than positioned. The halo still goes down first, and for the same
+/// reason -- but for the whole run, not per letter, or each letter's halo
+/// would eat the one before it.
+pub fn draw_along_line(
+    pixmap: &mut Pixmap,
+    glyphs: &[GlyphOnLine],
+    store: &GlyphStore,
+    fonts: &[String],
+    paint: &TextPaint,
+) {
+    if glyphs.is_empty() || paint.opacity <= 0.0 {
+        return;
+    }
+    let scale = paint.size / GLYPH_SIZE;
+
+    let ink_for = |glyph: &GlyphOnLine, halo: Option<Halo>| Ink {
+        // Each glyph carries its own origin, so the pen is at zero.
+        origin: glyph.at,
+        scale,
+        color: if halo.is_some() {
+            paint.halo_color
+        } else {
+            paint.color
+        },
+        opacity: paint.opacity,
+        halo,
+        rotation: glyph.angle,
+    };
+    let pen = PlacedGlyph {
+        code: 0,
+        x: 0.0,
+        y: 0.0,
+    };
+
+    if paint.halo_width > 0.0 {
+        let halo = Some(Halo {
+            width: paint.halo_width,
+            blur: paint.halo_blur,
+        });
+        for glyph in glyphs {
+            if let Some(face) = store.glyph(fonts, glyph.code) {
+                blit(pixmap, face, &pen, &ink_for(glyph, halo));
+            }
+        }
+    }
+    for glyph in glyphs {
+        if let Some(face) = store.glyph(fonts, glyph.code) {
+            blit(pixmap, face, &pen, &ink_for(glyph, None));
         }
     }
 }
@@ -347,17 +405,30 @@ struct Halo {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn blit(
-    pixmap: &mut Pixmap,
-    glyph: &Glyph,
-    placed: &PlacedGlyph,
-    origin_x: f32,
-    origin_y: f32,
+/// Everything a single glyph's blit needs beyond the glyph itself.
+#[derive(Debug, Clone, Copy)]
+struct Ink {
+    /// Where the run's own origin sits on the target.
+    origin: (f32, f32),
+    /// Target pixels per SDF pixel.
     scale: f32,
     color: Color,
     opacity: f32,
     halo: Option<Halo>,
-) {
+    /// Clockwise, about the pen position. Zero for a label laid out flat,
+    /// which is every label that is not following a road.
+    rotation: f32,
+}
+
+fn blit(pixmap: &mut Pixmap, glyph: &Glyph, placed: &PlacedGlyph, ink: &Ink) {
+    let Ink {
+        origin: (origin_x, origin_y),
+        scale,
+        color,
+        opacity,
+        halo,
+        rotation,
+    } = *ink;
     if glyph.bitmap.is_empty() {
         return;
     }
@@ -384,24 +455,57 @@ fn blit(
     let blur = halo.map(|h| h.blur).unwrap_or(0.0).max(0.0);
     let gamma = (0.105 / scale).max(0.001) + blur / (2.0 * RANGE * scale);
 
-    let dest_w = (bw as f32 * scale).ceil() as i32;
-    let dest_h = (bh as f32 * scale).ceil() as i32;
+    let dest_w = bw as f32 * scale;
+    let dest_h = bh as f32 * scale;
     let pix_w = pixmap.width() as i32;
     let pix_h = pixmap.height() as i32;
 
-    for dy in 0..dest_h {
-        let py = y0.floor() as i32 + dy;
+    // A glyph following a road is turned about the pen, so the area to walk
+    // is the box around the turned corners and each pixel in it is turned
+    // back to ask which part of the glyph lands there.
+    let (sin, cos) = rotation.to_radians().sin_cos();
+    let (pen_x, pen_y) = (origin_x + placed.x * scale, origin_y + placed.y * scale);
+    let corners = [
+        (x0, y0),
+        (x0 + dest_w, y0),
+        (x0, y0 + dest_h),
+        (x0 + dest_w, y0 + dest_h),
+    ];
+    let mut min = (f32::MAX, f32::MAX);
+    let mut max = (f32::MIN, f32::MIN);
+    for (cx, cy) in corners {
+        let (dx, dy) = (cx - pen_x, cy - pen_y);
+        let rx = pen_x + dx * cos - dy * sin;
+        let ry = pen_y + dx * sin + dy * cos;
+        min = (min.0.min(rx), min.1.min(ry));
+        max = (max.0.max(rx), max.1.max(ry));
+    }
+
+    let (back_sin, back_cos) = (-rotation).to_radians().sin_cos();
+    for py in min.1.floor() as i32..=max.1.ceil() as i32 {
         if py < 0 || py >= pix_h {
             continue;
         }
-        for dx in 0..dest_w {
-            let px = x0.floor() as i32 + dx;
+        for px in min.0.floor() as i32..=max.0.ceil() as i32 {
             if px < 0 || px >= pix_w {
                 continue;
             }
-            // Sample the field at this target pixel's centre.
-            let sx = (px as f32 + 0.5 - x0) / scale;
-            let sy = (py as f32 + 0.5 - y0) / scale;
+            // Sample the field at this target pixel's centre, turned back
+            // into the glyph's own frame first.
+            let (fx, fy) = if rotation == 0.0 {
+                (px as f32 + 0.5, py as f32 + 0.5)
+            } else {
+                let (dx, dy) = (px as f32 + 0.5 - pen_x, py as f32 + 0.5 - pen_y);
+                (
+                    pen_x + dx * back_cos - dy * back_sin,
+                    pen_y + dx * back_sin + dy * back_cos,
+                )
+            };
+            let sx = (fx - x0) / scale;
+            let sy = (fy - y0) / scale;
+            if sx < 0.0 || sy < 0.0 || sx >= bw as f32 || sy >= bh as f32 {
+                continue;
+            }
             let distance = sample(&glyph.bitmap, bw, bh, sx, sy);
             let alpha =
                 smoothstep(threshold - gamma, threshold + gamma, distance) * opacity * color.a;

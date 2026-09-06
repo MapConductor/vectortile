@@ -34,7 +34,7 @@ use crate::filter::CompiledFilter;
 use crate::model::{self, GeomType};
 use crate::sprite::{self, IconPaint, SpriteSheet};
 use crate::style::{Layer, LayerKind, Style};
-use crate::text::{self, Anchor, GlyphStore, Shaped, TextPaint};
+use crate::text::{self, Anchor, GlyphOnLine, GlyphStore, Shaped, TextPaint};
 
 /// Below this, in the style's own pixels, a label is not read -- it is a
 /// smudge that still takes room from its neighbours and still costs a font
@@ -60,6 +60,10 @@ struct Spot {
     at: (f32, f32),
     angle: f32,
     along_a_line: bool,
+    /// Which of the feature's lines this sits on, and how far along it, for a
+    /// label that has to follow the line rather than sit at a point.
+    line: usize,
+    distance: f32,
 }
 
 /// An icon that has been positioned but not yet drawn.
@@ -85,6 +89,10 @@ pub struct Label {
     /// Where the anchor sits on the target tile, in pixels.
     pub at: (f32, f32),
     pub icon: Option<IconPlacement>,
+    /// Set when the label follows a line rather than sitting at a point: each
+    /// glyph then has its own place and angle, and [`Label::shaped`] is only
+    /// what it was laid out from.
+    pub curve: Option<Vec<GlyphOnLine>>,
     /// Axis-aligned box the label will cover, for collision. Covers both the
     /// text and the icon when there are both.
     pub bounds: [f32; 4],
@@ -120,13 +128,11 @@ pub fn unsupported(style: &Style, zoom: f64) -> Vec<String> {
         if layer.kind != LayerKind::Symbol || !layer.is_visible() || !layer.applies_at(zoom) {
             continue;
         }
-        let ctx = Ctx::zoom_only(zoom);
-        if let Some(placement) = layer.layout_string("symbol-placement", &ctx) {
-            // Icons follow a line now; glyphs still do not, so this is only
-            // a loss for a layer that has something to say.
-            if placement != "point" && layer.layout.contains_key("text-field") {
-                reasons.push(format!("{}: text along a {}", layer.id, placement));
-            }
+        // Shaping is one glyph after another at its own advance. Letter
+        // spacing changes that advance, and a script whose letters join or
+        // reorder changes it per neighbour; neither is done here.
+        if layer.layout.contains_key("text-letter-spacing") {
+            reasons.push(format!("{}: text-letter-spacing", layer.id));
         }
     }
     reasons
@@ -301,52 +307,83 @@ pub fn collect(
                     layer: Some(data_layer),
                     feature: Some(feature),
                 };
-                // One symbol at the feature's anchor, or a run of them along it.
-                let spots: Vec<(f32, f32, f32)> = if along_a_line {
+                // One symbol at the feature's anchor, or a run of them along
+                // it. The lines are kept as well as the spots, because text
+                // that follows a road needs the road, not just a point on it.
+                let lines: Vec<PixelLine> = if along_a_line {
+                    pixel_lines(feature, decoded_tile, data_layer.extent, tile_size)
+                } else {
+                    Vec::new()
+                };
+                let spots: Vec<Spot> = if along_a_line {
                     let spacing =
                         layer.layout_number("symbol-spacing", &ctx, 250.0) as f32 * paint_scale;
                     let keep_upright = layer
                         .layout_value("icon-keep-upright", &ctx)
                         .map(|v| v.truthy())
                         .unwrap_or(false);
-                    line_anchors(
-                        feature,
-                        decoded_tile,
-                        data_layer.extent,
-                        tile_size,
-                        spacing,
-                        keep_upright,
-                    )
+                    line_spots(&lines, spacing, keep_upright, placement == "line-center")
                 } else {
                     anchor_point(feature, decoded_tile, data_layer.extent, tile_size)
-                        .map(|at| vec![(at.0, at.1, 0.0)])
+                        .map(|at| {
+                            vec![Spot {
+                                at,
+                                angle: 0.0,
+                                along_a_line: false,
+                                line: 0,
+                                distance: 0.0,
+                            }]
+                        })
                         .unwrap_or_default()
                 };
 
-                for (ax, ay, angle) in spots {
-                    let anchor_point = (ax, ay);
+                // Shaped once for the feature, not once per place it is
+                // drawn: a road carries the same name every 250 pixels, and
+                // laying the glyphs out again for each is work with a known
+                // answer.
+                let content = text_field(layer, &ctx)
+                    .map(|raw| transform_case(&raw, layer.layout_string("text-transform", &ctx)))
+                    .filter(|content| !content.trim().is_empty());
 
-                    let content = if along_a_line {
-                        None
-                    } else {
-                        text_field(layer, &ctx)
-                            .map(|raw| {
-                                transform_case(&raw, layer.layout_string("text-transform", &ctx))
-                            })
-                            .filter(|content| !content.trim().is_empty())
-                    };
+                let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
+                // Measured on screen: `size` is in this tile's pixels, and a
+                // tile rasterised small is drawn back up to size.
+                let readable = paint_scale > 0.0 && size / paint_scale >= MIN_TEXT_SIZE;
+                let shaped = match &content {
+                    Some(content) if readable => {
+                        // A label following a road is one line: there is
+                        // nowhere for a second one to go.
+                        let max_width = if along_a_line {
+                            f32::MAX
+                        } else {
+                            layer.layout_number("text-max-width", &ctx, 10.0) as f32
+                        };
+                        text::shape(content, &fonts, store, max_width)
+                    }
+                    _ => Shaped::default(),
+                };
 
-                    let size = layer.layout_number("text-size", &ctx, 16.0) as f32 * paint_scale;
-                    // Measured on screen: `size` is in this tile's pixels, and a
-                    // tile rasterised small is drawn back up to size.
-                    let readable = paint_scale > 0.0 && size / paint_scale >= MIN_TEXT_SIZE;
-                    let shaped = match &content {
-                        Some(content) if readable => {
-                            let max_width =
-                                layer.layout_number("text-max-width", &ctx, 10.0) as f32;
-                            text::shape(content, &fonts, store, max_width)
+                for spot in spots {
+                    let anchor_point = spot.at;
+                    let shaped = shaped.clone();
+
+                    // Along a road each glyph gets its own place and angle,
+                    // and the whole label is dropped if the road is too short
+                    // to hold it -- half a name is worse than none, and here
+                    // there is no neighbouring tile to draw the rest.
+                    let curve = if along_a_line && !shaped.is_empty() {
+                        let upright = layer
+                            .layout_value("text-keep-upright", &ctx)
+                            .map(|v| v.truthy())
+                            .unwrap_or(true);
+                        match lines.get(spot.line).and_then(|line| {
+                            lay_along_line(line, &shaped, spot.distance, size, upright)
+                        }) {
+                            Some(glyphs) => Some(glyphs),
+                            None => continue,
                         }
-                        _ => Shaped::default(),
+                    } else {
+                        None
                     };
 
                     let anchor = layer
@@ -372,23 +409,15 @@ pub fn collect(
                     let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
                         None
                     } else {
-                        Some(text::bounds(&shaped, &paint, anchor, at))
+                        match &curve {
+                            Some(glyphs) => curved_bounds(glyphs, size),
+                            None => Some(text::bounds(&shaped, &paint, anchor, at)),
+                        }
                     };
 
                     // After the text, because `icon-text-fit` sizes the icon around
                     // it: a shield is only as wide as the number it carries.
-                    let icon = icon_placement(
-                        layer,
-                        &ctx,
-                        sprites,
-                        paint_scale,
-                        Spot {
-                            at: anchor_point,
-                            angle,
-                            along_a_line,
-                        },
-                        text_bounds,
-                    );
+                    let icon = icon_placement(layer, &ctx, sprites, paint_scale, spot, text_bounds);
 
                     // A symbol with neither its glyphs nor its icon yet is not a
                     // label; it would reserve space for nothing and push its
@@ -440,13 +469,14 @@ pub fn collect(
                     };
 
                     labels.push(Label {
+                        curve,
                         layer_index,
                         // The style's own idea of which of its labels matters
                         // most. Lower goes first, which is why a style that
                         // wants the biggest place first negates the
                         // population.
                         sort_key: layer.layout_number("symbol-sort-key", &ctx, 0.0),
-                        content: content.unwrap_or_default(),
+                        content: content.clone().unwrap_or_default(),
                         world_at: (
                             (origin.0 + at.0 as f64).round() as i64,
                             (origin.1 + at.1 as f64).round() as i64,
@@ -496,53 +526,189 @@ fn leaves_tile(bounds: [f32; 4], tile_size: u32) -> bool {
     bounds[0] < 0.0 || bounds[1] < 0.0 || bounds[2] > size || bounds[3] > size
 }
 
-/// Points along a feature's lines, in target pixels, with the direction of the
-/// line at each one.
+/// A feature's line in target pixels, with enough bookkeeping to ask where a
+/// given distance along it lands.
+struct PixelLine {
+    points: Vec<(f32, f32)>,
+    /// Distance from the start to each point.
+    marks: Vec<f32>,
+}
+
+impl PixelLine {
+    fn new(points: Vec<(f32, f32)>) -> Option<PixelLine> {
+        if points.len() < 2 {
+            return None;
+        }
+        let mut marks = Vec::with_capacity(points.len());
+        let mut travelled = 0.0;
+        marks.push(0.0);
+        for pair in points.windows(2) {
+            travelled += (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+            marks.push(travelled);
+        }
+        Some(PixelLine { points, marks })
+    }
+
+    fn length(&self) -> f32 {
+        *self.marks.last().unwrap_or(&0.0)
+    }
+
+    /// The point at this distance along the line, and the direction there.
+    fn at(&self, distance: f32) -> Option<((f32, f32), f32)> {
+        if distance < 0.0 || distance > self.length() {
+            return None;
+        }
+        let index = match self.marks.binary_search_by(|m| m.total_cmp(&distance)) {
+            Ok(i) => i.min(self.points.len() - 2),
+            Err(i) => i.saturating_sub(1).min(self.points.len() - 2),
+        };
+        let (a, b) = (self.points[index], self.points[index + 1]);
+        let span = self.marks[index + 1] - self.marks[index];
+        let t = if span > f32::EPSILON {
+            (distance - self.marks[index]) / span
+        } else {
+            0.0
+        };
+        let angle = (b.1 - a.1).atan2(b.0 - a.0).to_degrees();
+        Some(((a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t), angle))
+    }
+
+    fn reversed(&self) -> PixelLine {
+        let mut points = self.points.clone();
+        points.reverse();
+        PixelLine::new(points).expect("a reversed line has the same points")
+    }
+}
+
+/// Lays a shaped run along a line, centred on `centre` distance.
 ///
-/// The first sits half a spacing in, so a road shorter than the spacing still
-/// gets one marking rather than none.
-fn line_anchors(
+/// Returns nothing when the label would run off either end: half a road name
+/// is worse than none, and unlike a tile edge there is no neighbour to draw
+/// the rest.
+fn lay_along_line(
+    line: &PixelLine,
+    shaped: &Shaped,
+    centre: f32,
+    size: f32,
+    keep_upright: bool,
+) -> Option<Vec<GlyphOnLine>> {
+    let scale = size / crate::glyphs::GLYPH_SIZE;
+    let width = shaped.width * scale;
+    let start = centre - width / 2.0;
+    if start < 0.0 || start + width > line.length() {
+        return None;
+    }
+
+    // Which way the text runs. A road drawn east to west would put every
+    // letter upside down, so the line is walked backwards instead.
+    if keep_upright {
+        if let Some((_, angle)) = line.at(centre) {
+            if !(-90.0..=90.0).contains(&angle) {
+                let flipped = line.reversed();
+                let mirrored = line.length() - centre;
+                return lay_along_line(&flipped, shaped, mirrored, size, false);
+            }
+        }
+    }
+
+    let mut out = Vec::with_capacity(shaped.glyphs.len());
+    for glyph in &shaped.glyphs {
+        let along = start + glyph.x * scale;
+        let ((x, y), angle) = line.at(along)?;
+        // The baseline sits below the line's own path, so the text reads as
+        // sitting on the road rather than through it.
+        let (sin, cos) = angle.to_radians().sin_cos();
+        let drop = 0.35 * size;
+        out.push(GlyphOnLine {
+            code: glyph.code,
+            at: (x - sin * drop, y + cos * drop),
+            angle,
+        });
+    }
+    Some(out)
+}
+
+/// The box a run laid on a line covers, roughly: every glyph's pen, grown by
+/// the size of a glyph. Collision has no way to say anything but a rectangle,
+/// and a curved label's true shape is not one.
+fn curved_bounds(glyphs: &[GlyphOnLine], size: f32) -> Option<[f32; 4]> {
+    let first = glyphs.first()?;
+    let mut box_ = [first.at.0, first.at.1, first.at.0, first.at.1];
+    for glyph in glyphs {
+        box_[0] = box_[0].min(glyph.at.0);
+        box_[1] = box_[1].min(glyph.at.1);
+        box_[2] = box_[2].max(glyph.at.0);
+        box_[3] = box_[3].max(glyph.at.1);
+    }
+    Some([
+        box_[0] - size * 0.5,
+        box_[1] - size * 0.9,
+        box_[2] + size * 0.5,
+        box_[3] + size * 0.3,
+    ])
+}
+
+/// A feature's lines, in target pixels.
+fn pixel_lines(
     feature: &model::Feature,
     decoded: &crate::raster::DecodedTile,
     extent: u32,
     tile_size: u32,
+) -> Vec<PixelLine> {
+    feature
+        .parts
+        .iter()
+        .filter_map(|part| {
+            PixelLine::new(
+                part.iter()
+                    .map(|p| to_pixels(p[0], p[1], decoded, extent, tile_size))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Where along those lines symbols go.
+///
+/// One every `spacing`, starting half a spacing in so a road shorter than the
+/// spacing still gets one marking rather than none -- or a single one in the
+/// middle when the style asks for `line-center`.
+fn line_spots(
+    lines: &[PixelLine],
     spacing: f32,
     keep_upright: bool,
-) -> Vec<(f32, f32, f32)> {
+    centre_only: bool,
+) -> Vec<Spot> {
     let mut out = Vec::new();
-    if spacing < 1.0 {
-        return out;
-    }
-    for part in &feature.parts {
-        if part.len() < 2 {
+    for (index, line) in lines.iter().enumerate() {
+        let length = line.length();
+        if length <= 0.0 {
             continue;
         }
-        let points: Vec<(f32, f32)> = part
-            .iter()
-            .map(|p| to_pixels(p[0], p[1], decoded, extent, tile_size))
-            .collect();
-
-        let mut travelled = 0.0f32;
-        let mut next = spacing / 2.0;
-        for pair in points.windows(2) {
-            let (a, b) = (pair[0], pair[1]);
-            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-            let length = dx.hypot(dy);
-            if length <= f32::EPSILON {
-                continue;
-            }
-            while next <= travelled + length {
-                let t = (next - travelled) / length;
-                let mut angle = dy.atan2(dx).to_degrees();
+        let mut distance = if centre_only {
+            length / 2.0
+        } else {
+            spacing / 2.0
+        };
+        while distance <= length {
+            if let Some((at, mut angle)) = line.at(distance) {
                 // Upside down reads as a different sign entirely, so a style
                 // can ask for the symbol to be turned the right way up.
                 if keep_upright && !(-90.0..=90.0).contains(&angle) {
                     angle = normalise_degrees(angle + 180.0);
                 }
-                out.push((a.0 + dx * t, a.1 + dy * t, angle));
-                next += spacing;
+                out.push(Spot {
+                    at,
+                    angle,
+                    along_a_line: true,
+                    line: index,
+                    distance,
+                });
             }
-            travelled += length;
+            if centre_only || spacing < 1.0 {
+                break;
+            }
+            distance += spacing;
         }
     }
     out
@@ -723,6 +889,10 @@ pub fn draw(
         if label.shaped.is_empty() {
             continue;
         }
+        if let Some(curve) = &label.curve {
+            text::draw_along_line(pixmap, curve, store, &label.fonts, &label.paint);
+            continue;
+        }
         text::draw(
             pixmap,
             &label.shaped,
@@ -786,6 +956,7 @@ fn icon_placement(
         at: anchor_point,
         angle: line_angle,
         along_a_line,
+        ..
     } = spot;
     let sheet = sprites?;
     let raw = layer.layout.get("icon-image")?;
@@ -1089,6 +1260,72 @@ mod tests {
         let mut s = GlyphStore::new();
         s.insert(stack);
         s
+    }
+
+    /// A road name follows the road: each glyph at its own place, facing its
+    /// own way. Laid out flat it would cross every street it names.
+    #[test]
+    fn lays_a_name_along_the_line_it_names() {
+        let store = store(&[0x41, 0x42]);
+        let shaped = text::shape("AB", &["F".to_string()], &store, f32::MAX);
+
+        // A straight horizontal line, 400 pixels long.
+        let flat = PixelLine::new(vec![(50.0, 200.0), (450.0, 200.0)]).expect("a line");
+        let glyphs = lay_along_line(&flat, &shaped, 200.0, 24.0, true).expect("it fits");
+        assert_eq!(glyphs.len(), 2);
+        assert!(glyphs[0].angle.abs() < 0.01, "a flat road is 0 degrees");
+        assert!(
+            glyphs[1].at.0 > glyphs[0].at.0,
+            "the run goes left to right"
+        );
+        // Centred on the anchor, which is a distance along the line rather
+        // than a coordinate: the line starts at x=50, the run is 24 pixels
+        // wide, so it begins at 50 + 200 - 12.
+        assert!(
+            (glyphs[0].at.0 - 238.0).abs() < 1.0,
+            "got {:?}",
+            glyphs[0].at
+        );
+
+        // The same line turned: every glyph turns with it.
+        let down = PixelLine::new(vec![(200.0, 50.0), (200.0, 450.0)]).expect("a line");
+        let turned = lay_along_line(&down, &shaped, 200.0, 24.0, true).expect("it fits");
+        assert!((turned[0].angle - 90.0).abs() < 0.01, "got {:?}", turned[0]);
+        assert!(
+            turned[1].at.1 > turned[0].at.1,
+            "the run goes down the line"
+        );
+    }
+
+    /// A road drawn east to west is the same road, and its name still has to
+    /// read left to right.
+    #[test]
+    fn turns_a_backwards_road_name_the_right_way_up() {
+        let store = store(&[0x41, 0x42]);
+        let shaped = text::shape("AB", &["F".to_string()], &store, f32::MAX);
+        let backwards = PixelLine::new(vec![(450.0, 200.0), (50.0, 200.0)]).expect("a line");
+
+        let upright = lay_along_line(&backwards, &shaped, 200.0, 24.0, true).expect("it fits");
+        assert!(upright[0].angle.abs() < 0.01, "got {:?}", upright[0]);
+        assert!(upright[1].at.0 > upright[0].at.0, "it reads left to right");
+
+        let as_drawn = lay_along_line(&backwards, &shaped, 200.0, 24.0, false).expect("it fits");
+        assert!(
+            (as_drawn[0].angle.abs() - 180.0).abs() < 0.01,
+            "without keep-upright it follows the line as drawn, got {:?}",
+            as_drawn[0]
+        );
+    }
+
+    /// Half a road name is worse than none, and there is no neighbour to draw
+    /// the rest -- the line simply ends.
+    #[test]
+    fn drops_a_name_the_road_is_too_short_for() {
+        let store = store(&[0x41, 0x42]);
+        let shaped = text::shape("AB", &["F".to_string()], &store, f32::MAX);
+        let stub = PixelLine::new(vec![(100.0, 100.0), (120.0, 100.0)]).expect("a line");
+
+        assert!(lay_along_line(&stub, &shaped, 10.0, 24.0, true).is_none());
     }
 
     /// `symbol-sort-key` is the style saying which of its own labels matters
@@ -1481,14 +1718,22 @@ mod tests {
         };
         let feature = &decoded.tile.layers[0].features[0];
 
-        let spots = line_anchors(feature, &decoded, 4096, 512, 100.0, false);
+        let spots = line_spots(
+            &pixel_lines(feature, &decoded, 4096, 512),
+            100.0,
+            false,
+            false,
+        );
         // First at half a spacing, then every spacing: 50, 150, 250, 350, 450.
         assert_eq!(spots.len(), 5);
-        assert!((spots[0].0 - 50.0).abs() < 0.5, "got {:?}", spots[0]);
-        assert!((spots[1].0 - 150.0).abs() < 0.5, "got {:?}", spots[1]);
+        assert!((spots[0].at.0 - 50.0).abs() < 0.5, "got {:?}", spots[0]);
+        assert!((spots[1].at.0 - 150.0).abs() < 0.5, "got {:?}", spots[1]);
         for spot in &spots {
-            assert!((spot.1 - 256.0).abs() < 0.5, "off the line: {spot:?}");
-            assert!(spot.2.abs() < 0.5, "a flat line is 0 degrees, got {spot:?}");
+            assert!((spot.at.1 - 256.0).abs() < 0.5, "off the line: {spot:?}");
+            assert!(
+                spot.angle.abs() < 0.5,
+                "a flat line is 0 degrees, got {spot:?}"
+            );
         }
     }
 
@@ -1517,15 +1762,25 @@ mod tests {
         };
         let feature = &decoded.tile.layers[0].features[0];
 
-        let facing = line_anchors(feature, &decoded, 4096, 512, 200.0, false);
+        let facing = line_spots(
+            &pixel_lines(feature, &decoded, 4096, 512),
+            200.0,
+            false,
+            false,
+        );
         assert!(
-            (facing[0].2.abs() - 180.0).abs() < 0.5,
+            (facing[0].angle.abs() - 180.0).abs() < 0.5,
             "got {:?}",
             facing[0]
         );
 
-        let upright = line_anchors(feature, &decoded, 4096, 512, 200.0, true);
-        assert!(upright[0].2.abs() < 0.5, "got {:?}", upright[0]);
+        let upright = line_spots(
+            &pixel_lines(feature, &decoded, 4096, 512),
+            200.0,
+            true,
+            false,
+        );
+        assert!(upright[0].angle.abs() < 0.5, "got {:?}", upright[0]);
     }
 
     /// A line shorter than one spacing still carries its marking -- that is
@@ -1554,7 +1809,12 @@ mod tests {
         let feature = &decoded.tile.layers[0].features[0];
 
         // The line is 50 pixels long and the spacing is 40.
-        let spots = line_anchors(feature, &decoded, 4096, 512, 40.0, false);
+        let spots = line_spots(
+            &pixel_lines(feature, &decoded, 4096, 512),
+            40.0,
+            false,
+            false,
+        );
         assert_eq!(spots.len(), 1);
     }
 
@@ -1662,6 +1922,7 @@ mod tests {
             anchor: Anchor::Center,
             at: (x, y),
             icon: None,
+            curve: None,
             bounds: [x, y, x + w, y + h],
             text_bounds: Some([x, y, x + w, y + h]),
             icon_bounds: None,
