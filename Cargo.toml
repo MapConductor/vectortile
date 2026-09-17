@@ -48,3 +48,10 @@ opt-level = 3
 
 [profile.release.package.miniz_oxide]
 opt-level = 3
+
+# Android renders on the device's critical path. Keep the size-first release
+# profile for other consumers, but optimize native Android rendering for speed.
+# Pixel 5a measurements and reproduction steps: docs/android-performance.md.
+[profile.android-release]
+inherits = "release"
+opt-level = 3

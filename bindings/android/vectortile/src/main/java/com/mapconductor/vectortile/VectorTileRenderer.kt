@@ -2,6 +2,7 @@ package com.mapconductor.vectortile
 
 import org.json.JSONArray
 import java.io.Closeable
+import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -150,6 +151,23 @@ class VectorTileRenderer private constructor(
         return NativeRenderer.nativeDrawLabels(requireHandle(), z, x, y, tileSize, rgba, data, lengths)
     }
 
+    /** Draws a standalone transparent label tile without an RGBA JNI copy. */
+    internal fun renderLabels(
+        z: Int,
+        x: Int,
+        y: Int,
+        tileSize: Int,
+        tiles: List<ByteArray?>,
+    ): NativeLabelPixels? {
+        val (data, lengths) = pack(tiles)
+        val placed = IntArray(1)
+        val pixels =
+            NativeRenderer.nativeRenderLabels(
+                requireHandle(), z, x, y, tileSize, data, lengths, placed,
+            ) ?: return null
+        return NativeLabelPixels(pixels, placed[0])
+    }
+
     /**
      * Rasterises `z/x/y` to PNG bytes.
      *
@@ -213,10 +231,19 @@ class VectorTileRenderer private constructor(
         tileSize: Int,
         data: ByteArray,
         lengths: IntArray,
-    ): FloatArray = NativeRenderer.nativeTessellate(requireHandle(), z, x, y, tileSize, data, lengths)
+    ): ByteBuffer = NativeRenderer.nativeTessellate(requireHandle(), z, x, y, tileSize, data, lengths)
 
     /** JSON array of layer `type` values in this style that will not be drawn. */
     fun unsupportedLayerTypes(): String = NativeRenderer.nativeUnsupportedLayerTypes(requireHandle())
+
+    /**
+     * JSON array of the credits this style's sources ask to be shown.
+     *
+     * The host must display these: a style is data under someone's licence,
+     * and the sample basemap draws OpenStreetMap, whose licence requires the
+     * credit. May contain HTML — the text is normally a link to the licence.
+     */
+    fun attributions(): String = NativeRenderer.nativeAttributions(requireHandle())
 
     /**
      * Reasons the current style may not render as intended, as a JSON array of

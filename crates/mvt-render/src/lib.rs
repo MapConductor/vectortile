@@ -34,6 +34,7 @@
 //! [`Renderer::unsupported_layer_types`] reports layer types nothing here
 //! draws at all: raster, hillshade, fill-extrusion.
 
+mod clock;
 pub mod color;
 pub mod dash;
 pub mod expr;
@@ -344,6 +345,16 @@ impl Renderer {
             .collect()
     }
 
+    /// Credits the style's sources ask to be shown, in layer order.
+    ///
+    /// The host has to display these. A style is data under someone's licence
+    /// -- the sample basemap draws OpenStreetMap, which requires the credit --
+    /// and this renderer reads that credit out of the style and then hands it
+    /// on rather than dropping it on the floor. May contain HTML.
+    pub fn attributions(&self) -> Vec<String> {
+        self.style.attributions()
+    }
+
     /// Layer `type` values present in the style that this renderer will skip.
     pub fn unsupported_layer_types(&self) -> Vec<String> {
         self.style.unsupported_layer_types()
@@ -417,7 +428,7 @@ impl Renderer {
         }
 
         let plan = self.plan(z, x, y);
-        let decode_started = std::time::Instant::now();
+        let decode_started = crate::clock::Stopwatch::start();
         let mut decoded = Vec::with_capacity(plan.requests.len());
         for (request, data) in plan
             .requests
@@ -439,7 +450,7 @@ impl Renderer {
             };
             decoded.push((request, tile));
         }
-        let decode_ms = decode_started.elapsed().as_secs_f32() * 1000.0;
+        let decode_ms = decode_started.ms();
 
         let views: Vec<tessellate::DecodedTile<'_>> = decoded
             .iter()
@@ -452,9 +463,9 @@ impl Renderer {
             })
             .collect();
 
-        let tessellate_started = std::time::Instant::now();
+        let tessellate_started = crate::clock::Stopwatch::start();
         let result = tessellate::tessellate(&self.style, z as f64, tile_size, &views);
-        let tessellate_ms = tessellate_started.elapsed().as_secs_f32() * 1000.0;
+        let tessellate_ms = tessellate_started.ms();
 
         let mut packed = Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
         packed.push(result.extent as f32);
@@ -685,11 +696,11 @@ impl Renderer {
             return Ok(0);
         }
 
-        let t0 = std::time::Instant::now();
+        let t0 = crate::clock::Stopwatch::start();
         let plan = self.plan(z, x, y);
         let decoded = self.decode_plan_labels(&plan, tile_data);
-        let decode_ms = t0.elapsed().as_secs_f32() * 1000.0;
-        let t1 = std::time::Instant::now();
+        let decode_ms = t0.ms();
+        let t1 = crate::clock::Stopwatch::start();
         let paint_scale = tile_size as f32 / 512.0;
         let labels = symbol::collect(
             &self.style,
@@ -704,7 +715,7 @@ impl Renderer {
             sprites.as_ref(),
         );
         let placed = symbol::place(labels);
-        let collect_ms = t1.elapsed().as_secs_f32() * 1000.0;
+        let collect_ms = t1.ms();
         if placed.is_empty() {
             return Ok(0);
         }
@@ -716,18 +727,108 @@ impl Renderer {
         // premultiplied data and rejects anything else, and a readback whose
         // alpha is saturated is both at once. Copying sidesteps having to
         // prove that at the type level for a buffer that came from GL.
-        let t2 = std::time::Instant::now();
+        let t2 = crate::clock::Stopwatch::start();
         pixmap.data_mut().copy_from_slice(rgba);
         symbol::draw(&mut pixmap, &placed, &store, sprites.as_ref());
         rgba.copy_from_slice(pixmap.data());
         if std::env::var("MVT_PROFILE").is_ok() {
             eprintln!(
                 "LABELPHASE decode={decode_ms:.1} collect={collect_ms:.1} draw={:.1} n={}",
-                t2.elapsed().as_secs_f32() * 1000.0,
+                t2.ms(),
                 placed.len()
             );
         }
         Ok(placed.len())
+    }
+
+    /// Draws labels onto a fresh transparent pixmap and returns its native
+    /// premultiplied RGBA storage.
+    ///
+    /// Android's split label layer uses this instead of passing a 4 MiB Java
+    /// byte array in and out. The returned Vec can be exposed as a direct
+    /// buffer and handed straight to the PNG encoder.
+    pub fn render_labels_rgba(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        tile_data: &[Option<&[u8]>],
+    ) -> Result<(Vec<u8>, usize), RenderError> {
+        if tile_size == 0 || tile_size > 8192 {
+            return Err(RenderError::BadTileSize(tile_size));
+        }
+        let store = self
+            .glyphs
+            .read()
+            .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
+        let sprites = self
+            .sprites
+            .read()
+            .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
+        if store.is_empty() && sprites.is_none() {
+            return Ok((Vec::new(), 0));
+        }
+
+        let plan = self.plan(z, x, y);
+        let decoded = self.decode_plan_labels(&plan, tile_data);
+        let paint_scale = tile_size as f32 / 512.0;
+        let labels = symbol::collect(
+            &self.style,
+            symbol::Target {
+                zoom: z as f64,
+                tile_size,
+                paint_scale,
+                xy: (x, y),
+            },
+            &decoded,
+            &store,
+            sprites.as_ref(),
+        );
+        let placed = symbol::place(labels);
+        if placed.is_empty() {
+            return Ok((Vec::new(), 0));
+        }
+
+        let Some(mut pixmap) = tiny_skia::Pixmap::new(tile_size, tile_size) else {
+            return Err(RenderError::BadTileSize(tile_size));
+        };
+        symbol::draw(&mut pixmap, &placed, &store, sprites.as_ref());
+        Ok((pixmap.take(), placed.len()))
+    }
+
+    /// The same as [`Renderer::render_labels_rgba`], encoded as a PNG.
+    ///
+    /// For hosts with no encoder of their own. A browser would otherwise have
+    /// to round-trip the pixels through a canvas to get an image a raster layer
+    /// can load, which costs more than the drawing did.
+    ///
+    /// The PNG carries **straight** alpha, unlike the raw buffer: encoding
+    /// un-premultiplies, which is what stops every halo coming out grey. An
+    /// empty result means nothing was placed and the caller should serve one
+    /// shared transparent tile.
+    pub fn render_labels_png(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        tile_data: &[Option<&[u8]>],
+    ) -> Result<(Vec<u8>, usize), RenderError> {
+        let (pixels, placed) = self.render_labels_rgba(z, x, y, tile_size, tile_data)?;
+        if placed == 0 || pixels.is_empty() {
+            return Ok((Vec::new(), placed));
+        }
+        let pixmap = tiny_skia::Pixmap::from_vec(
+            pixels,
+            tiny_skia::IntSize::from_wh(tile_size, tile_size)
+                .ok_or(RenderError::BadTileSize(tile_size))?,
+        )
+        .ok_or(RenderError::BadTileSize(tile_size))?;
+        let png = pixmap
+            .encode_png()
+            .map_err(|e| RenderError::Decode(format!("label tile would not encode: {e}")))?;
+        Ok((png, placed))
     }
 
     /// Decodes whatever arrived for a plan, in the plan's own order.
@@ -1475,8 +1576,20 @@ mod tests {
             }],
         }]);
 
-        // A field of opaque red, as the GPU would leave it.
+        // The standalone label route must be byte-for-byte identical to
+        // compositing onto a caller-provided transparent buffer.
         let size = 128u32;
+        let mut transparent = vec![0; (size * size * 4) as usize];
+        let transparent_count = renderer
+            .draw_labels_onto(10, 512, 300, size, &mut transparent, &[Some(&tile)])
+            .expect("draws onto transparent pixels");
+        let (direct, direct_count) = renderer
+            .render_labels_rgba(10, 512, 300, size, &[Some(&tile)])
+            .expect("draws a standalone label tile");
+        assert_eq!(direct_count, transparent_count);
+        assert_eq!(direct, transparent);
+
+        // A field of opaque red, as the GPU would leave it.
         let mut rgba = Vec::with_capacity((size * size * 4) as usize);
         for _ in 0..(size * size) {
             rgba.extend_from_slice(&[255, 0, 0, 255]);

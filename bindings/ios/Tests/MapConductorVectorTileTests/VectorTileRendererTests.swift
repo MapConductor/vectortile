@@ -135,8 +135,22 @@ final class VectorTileRendererTests: XCTestCase {
         return buffer
     }
 
+    /// Every type the demo style uses is drawn now, `symbol` included -- this
+    /// asserted the opposite while labels were still missing.
+    func testReportsNothingUndrawnForAStyleItCanDraw() throws {
+        XCTAssertEqual(try renderer.unsupportedLayerTypes(), [])
+    }
+
+    /// A type nothing here draws still has to be named, because the failure
+    /// mode is a tile that is quietly missing something.
     func testReportsUndrawnLayerTypes() throws {
-        XCTAssertTrue(try renderer.unsupportedLayerTypes().contains("symbol"))
+        let hillshaded = try VectorTileRenderer(
+            styleJSON: """
+            {"version": 8, "sources": {}, "layers": [{"id": "hills", "type": "hillshade"}]}
+            """
+        )
+        defer { hillshaded.close() }
+        XCTAssertEqual(try hillshaded.unsupportedLayerTypes(), ["hillshade"])
     }
 
     func testDiagnosesAMapboxStandardStyleInsteadOfRenderingBlank() throws {

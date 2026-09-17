@@ -1,11 +1,20 @@
 import { TileRenderCore, type TileRenderCoreOptions, type TileRequest } from './TileRenderCore';
 import type { WorkerRequest, WorkerResponse } from './protocol';
+import type { TileContent } from './TileRenderCore';
 
 export type { TileRequest };
 
 /** Matches `TileProvider` in `@mapconductor/js-sdk-core`. */
 export interface TileProvider {
-    renderTile(request: TileRequest): Uint8Array | null | Promise<Uint8Array | null>;
+    /**
+     * @param signal aborted when the map stops waiting for this tile. Honouring
+     *   it is optional but not free to skip: renderers are a fixed resource, so
+     *   a doomed tile is drawn instead of one still on screen.
+     */
+    renderTile(
+        request: TileRequest,
+        signal?: AbortSignal,
+    ): Uint8Array | null | Promise<Uint8Array | null>;
 }
 
 /**
@@ -54,9 +63,16 @@ class WorkerClient {
         { resolve: (value: Uint8Array | null) => void; reject: (error: Error) => void }
     >();
 
+    /** Called when the worker reports that glyphs landed. */
+    onGlyphs: ((generation: number) => void) | null = null;
+
     constructor(private readonly worker: Worker) {
         worker.addEventListener('message', (event: MessageEvent<WorkerResponse>) => {
             const message = event.data;
+            if (message.type === 'glyphs') {
+                this.onGlyphs?.(message.generation);
+                return;
+            }
             if (message.type !== 'render') return;
             const entry = this.pending.get(message.id);
             if (!entry) return;
@@ -74,6 +90,7 @@ class WorkerClient {
         unsupportedLayerTypes: string[];
         diagnostics: string[];
         warnings: string[];
+        attributions: string[];
     }> {
         const id = this.nextId++;
         return new Promise((resolve, reject) => {
@@ -87,6 +104,7 @@ class WorkerClient {
                         unsupportedLayerTypes: message.unsupportedLayerTypes ?? [],
                         diagnostics: message.diagnostics ?? [],
                         warnings: message.warnings ?? [],
+                        attributions: message.attributions ?? [],
                     });
             };
             this.worker.addEventListener('message', onMessage);
@@ -116,11 +134,28 @@ class WorkerClient {
         });
     }
 
-    render(z: number, x: number, y: number): Promise<Uint8Array | null> {
+    render(
+        z: number,
+        x: number,
+        y: number,
+        content: TileContent,
+        signal?: AbortSignal,
+    ): Promise<Uint8Array | null> {
         const id = this.nextId++;
         return new Promise((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
-            this.worker.postMessage({ type: 'render', id, z, x, y } satisfies WorkerRequest);
+            // Told to the worker rather than resolved here: the point is to
+            // stop the work, not to stop waiting for it.
+            signal?.addEventListener(
+                'abort',
+                () => {
+                    this.worker.postMessage({ type: 'abort', id } satisfies WorkerRequest);
+                },
+                { once: true },
+            );
+            this.worker.postMessage(
+                { type: 'render', id, z, x, y, content } satisfies WorkerRequest,
+            );
         });
     }
 
@@ -177,7 +212,7 @@ export class VectorTileProvider implements TileProvider {
         const core = await TileRenderCore.create(options);
         const diagnostics = core.diagnostics();
         for (const message of diagnostics) options.onWarning?.(message);
-        return new VectorTileProvider(
+        const provider = new VectorTileProvider(
             'inline',
             tileSize,
             core.unsupportedLayerTypes(),
@@ -185,6 +220,9 @@ export class VectorTileProvider implements TileProvider {
             null,
             core,
         );
+        provider.attributions = core.attributions();
+        core.onGlyphsLoaded = () => provider.onGlyphsLoaded?.(core.glyphGeneration);
+        return provider;
     }
 
     /** Why a worker cannot be used, or null if one can. */
@@ -208,7 +246,7 @@ export class VectorTileProvider implements TileProvider {
             new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
         const client = new WorkerClient(worker);
-        const { unsupportedLayerTypes, diagnostics, warnings } = await client.init({
+        const { unsupportedLayerTypes, diagnostics, warnings, attributions } = await client.init({
             type: 'init',
             styleText,
             tileSize,
@@ -220,7 +258,7 @@ export class VectorTileProvider implements TileProvider {
         for (const warning of warnings) options.onWarning?.(warning);
         for (const message of diagnostics) options.onWarning?.(message);
 
-        return new VectorTileProvider(
+        const provider = new VectorTileProvider(
             'worker',
             tileSize,
             unsupportedLayerTypes,
@@ -228,14 +266,75 @@ export class VectorTileProvider implements TileProvider {
             client,
             null,
         );
+        provider.attributions = attributions;
+        client.onGlyphs = (generation) => provider.onGlyphsLoaded?.(generation);
+        return provider;
     }
 
-    /** Renders one tile to PNG bytes. Returns null once disposed. */
-    async renderTile(request: TileRequest): Promise<Uint8Array | null> {
-        if (this.disposed) return null;
-        if (this.client) return this.client.render(request.z, request.x, request.y);
-        return this.core!.renderTile(request);
+    /**
+     * Renders one tile to PNG bytes. Returns null once disposed.
+     *
+     * `content` picks a half of the split layer. The default draws both into
+     * one tile, which is the single-layer behaviour.
+     */
+    /**
+     * Renders one tile to PNG bytes, both halves in one image.
+     *
+     * This is the shape a tile server calls; {@link renderContent} picks a half.
+     */
+    async renderTile(request: TileRequest, signal?: AbortSignal): Promise<Uint8Array | null> {
+        return this.renderContent(request, 'full', signal);
     }
+
+    /**
+     * Renders one half of the split layer, or both.
+     *
+     * @param signal aborted when the map stops waiting. A tile nobody will look
+     *   at is drawn *instead of* one still on screen, not as well as it.
+     */
+    async renderContent(
+        request: TileRequest,
+        content: TileContent = 'full',
+        signal?: AbortSignal,
+    ): Promise<Uint8Array | null> {
+        if (this.disposed || signal?.aborted) return null;
+        if (this.client) {
+            return this.client.render(request.z, request.x, request.y, content, signal);
+        }
+        return this.core!.renderTile(request, content, signal);
+    }
+
+    /**
+     * The ground alone: fills, lines and circles, and no glyph dependency.
+     *
+     * Mount this and {@link labelTiles} as two stacked raster layers and the map
+     * shows one map. The halves render in parallel, and a glyph range landing
+     * redraws only the transparent one, so a label appearing never blanks the
+     * map beneath it.
+     */
+    readonly groundTiles: TileProvider = {
+        renderTile: (request, signal) => this.renderContent(request, 'ground', signal),
+    };
+
+    /** The labels and icons alone, on a transparent ground. */
+    readonly labelTiles: TileProvider = {
+        renderTile: (request, signal) => this.renderContent(request, 'labels', signal),
+    };
+
+    /**
+     * Credits the style's sources ask to be shown.
+     *
+     * These are not optional. A style is data under someone's licence, and a
+     * basemap drawing OpenStreetMap requires the credit. May contain HTML —
+     * the credit is normally a link to the licence.
+     */
+    attributions: string[] = [];
+
+    /**
+     * Told when glyphs arrive and the tiles already on screen were drawn
+     * without them. Make the map refetch: nothing else will replace them.
+     */
+    onGlyphsLoaded: ((generation: number) => void) | null = null;
 
     /**
      * Replaces the style and returns the layer types the new one loses.

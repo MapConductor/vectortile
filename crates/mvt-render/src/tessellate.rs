@@ -176,9 +176,9 @@ pub fn tessellate(
         let start_len = out.vertices.len();
 
         // Same compiled-filter fast path the CPU rasteriser uses.
-        let compile_started = std::time::Instant::now();
+        let compile_started = crate::clock::Stopwatch::start();
         let filter = CompiledFilter::compile(layer.filter.as_ref(), data, zoom);
-        out.stats.filter_compile_ms += compile_started.elapsed().as_secs_f32() * 1000.0;
+        out.stats.filter_compile_ms += compile_started.ms();
         if filter.never_matches() {
             continue;
         }
@@ -212,7 +212,7 @@ pub fn tessellate(
             None
         };
 
-        let loop_started = std::time::Instant::now();
+        let loop_started = crate::clock::Stopwatch::start();
         let candidates = in_window
             .entry(data as *const model::Layer as usize)
             .or_insert_with(|| {
@@ -299,7 +299,7 @@ pub fn tessellate(
 
             match layer.kind {
                 LayerKind::Fill => {
-                    let started = std::time::Instant::now();
+                    let started = crate::clock::Stopwatch::start();
                     fill_feature(
                         feature,
                         tile,
@@ -308,13 +308,13 @@ pub fn tessellate(
                         &mut out.vertices,
                         &mut out.stats,
                     );
-                    out.stats.fill_ms += started.elapsed().as_secs_f32() * 1000.0;
+                    out.stats.fill_ms += started.ms();
                 }
                 LayerKind::Line => {
                     if size <= 0.0 {
                         continue;
                     }
-                    let started = std::time::Instant::now();
+                    let started = crate::clock::Stopwatch::start();
                     line_feature(
                         feature,
                         tile,
@@ -324,7 +324,7 @@ pub fn tessellate(
                         dash_pattern.as_deref(),
                         &mut out.vertices,
                     );
-                    out.stats.line_ms += started.elapsed().as_secs_f32() * 1000.0;
+                    out.stats.line_ms += started.ms();
                 }
                 LayerKind::Circle => {
                     if size <= 0.0 {
@@ -336,7 +336,7 @@ pub fn tessellate(
             }
         }
 
-        out.stats.feature_loop_ms += loop_started.elapsed().as_secs_f32() * 1000.0;
+        out.stats.feature_loop_ms += loop_started.ms();
 
         let added = out.vertices.len() - start_len;
         if added == 0 {
@@ -470,6 +470,10 @@ fn line_feature(
         if part.len() < 2 {
             continue;
         }
+        if dash_pattern.is_none() {
+            solid_line_part(part, tile, unify, extent, half_width, color, out);
+            continue;
+        }
         let points: Vec<[f32; 2]> = part
             .iter()
             .map(|p| project(*p, tile, unify, extent))
@@ -479,13 +483,9 @@ fn line_feature(
         // quads it is handed, so a dashed line is simply fewer of them. The
         // pattern's lengths are multiples of the line's width, and the width
         // is a half-width in extent units, hence the doubling.
-        let runs: Vec<Vec<[f32; 2]>> = match dash_pattern {
-            Some(pattern) if half_width > 0.0 => {
-                let scaled: Vec<f32> = pattern.iter().map(|v| v * half_width * 2.0).collect();
-                crate::dash::dashed(&points, &scaled)
-            }
-            _ => vec![points],
-        };
+        let pattern = dash_pattern.expect("solid lines returned above");
+        let scaled: Vec<f32> = pattern.iter().map(|v| v * half_width * 2.0).collect();
+        let runs = crate::dash::dashed(&points, &scaled);
 
         for points in runs {
             for window in points.windows(2) {
@@ -526,6 +526,66 @@ fn line_feature(
                 }
             }
         }
+    }
+}
+
+/// Emits the common non-dashed path straight from decoded coordinates.
+/// Keeping a projected Vec per feature here cost an allocation for every road
+/// under every style layer. Segment vertices are still emitted before joins,
+/// in exactly the same order as the dashed path.
+fn solid_line_part(
+    part: &[[f32; 2]],
+    tile: &DecodedTile<'_>,
+    unify: f32,
+    extent: f32,
+    half_width: f32,
+    color: Color,
+    out: &mut Vec<f32>,
+) {
+    // Keep the projected end of the previous segment. A point belongs to two
+    // adjacent segments, so projecting both ends of every window did almost
+    // twice the coordinate work needed for this pass.
+    let mut a = project(part[0], tile, unify, extent);
+    for point in &part[1..] {
+        let b = project(*point, tile, unify, extent);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length > f32::EPSILON {
+            let (nx, ny) = (-dy / length * half_width, dx / length * half_width);
+            let p0 = [a[0] + nx, a[1] + ny];
+            let p1 = [a[0] - nx, a[1] - ny];
+            let p2 = [b[0] + nx, b[1] + ny];
+            let p3 = [b[0] - nx, b[1] - ny];
+            for point in [p0, p1, p2, p1, p3, p2] {
+                push_vertex(out, point[0], point[1], color);
+            }
+        }
+        a = b;
+    }
+
+    // Joins must remain after all segments to preserve the packed vertex
+    // order. Use a three-point sliding window so this second pass also
+    // projects each point only once.
+    let mut prev = project(part[0], tile, unify, extent);
+    let mut here = project(part[1], tile, unify, extent);
+    for point in &part[2..] {
+        let next = project(*point, tile, unify, extent);
+        let d0 = normalise([here[0] - prev[0], here[1] - prev[1]]);
+        let d1 = normalise([next[0] - here[0], next[1] - here[1]]);
+        let n0 = [-d0[1] * half_width, d0[0] * half_width];
+        let n1 = [-d1[1] * half_width, d1[0] * half_width];
+        for point in [
+            here,
+            [here[0] + n0[0], here[1] + n0[1]],
+            [here[0] + n1[0], here[1] + n1[1]],
+            here,
+            [here[0] - n0[0], here[1] - n0[1]],
+            [here[0] - n1[0], here[1] - n1[1]],
+        ] {
+            push_vertex(out, point[0], point[1], color);
+        }
+        prev = here;
+        here = next;
     }
 }
 

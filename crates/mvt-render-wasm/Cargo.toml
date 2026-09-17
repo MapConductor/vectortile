@@ -15,3 +15,11 @@ serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
+
+# The wasm-opt that wasm-pack downloads (117) predates the features rustc now
+# emits by default -- bulk memory, sign extension and the rest -- and refuses to
+# validate its own input without them. `-all` lets it read what the compiler
+# wrote. Every one of those has been baseline in browsers since 2021; the
+# alternative is shipping unoptimised wasm.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ['-O', '-all']

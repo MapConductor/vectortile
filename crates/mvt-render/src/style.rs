@@ -62,6 +62,13 @@ pub struct Source {
     pub url: Option<String>,
     pub minzoom: u8,
     pub maxzoom: u8,
+    /// Credit the source asks to be shown wherever its data is drawn.
+    ///
+    /// The style spec allows HTML here, and every basemap style uses it -- the
+    /// text is a link to the licence. Kept verbatim rather than stripped: the
+    /// SDK's attribution overlay renders HTML, and a licence link that arrives
+    /// as plain text is a licence link nobody can follow.
+    pub attribution: Option<String>,
 }
 
 impl Source {
@@ -425,6 +432,34 @@ impl Style {
         out
     }
 
+    /// Credits owed for what this style draws, in the order the layers ask for
+    /// them.
+    ///
+    /// Only sources a drawable layer references, so a style that carries a
+    /// source it never draws does not credit it. Deliberately not filtered by
+    /// zoom, unlike [`Style::active_vector_sources`]: a credit that blinks out
+    /// as the user zooms is worse than one shown a little too often, and the
+    /// renderer draws a source's data above its `maxzoom` anyway by magnifying
+    /// the deepest tile it has.
+    pub fn attributions(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for layer in &self.layers {
+            if !layer.kind.is_drawable() || layer.kind == LayerKind::Background {
+                continue;
+            }
+            let Some(id) = layer.source.as_deref() else {
+                continue;
+            };
+            let Some(text) = self.sources.get(id).and_then(|s| s.attribution.as_deref()) else {
+                continue;
+            };
+            if !out.iter().any(|seen| seen == text) {
+                out.push(text.to_owned());
+            }
+        }
+        out
+    }
+
     /// Layer `type` values that were parsed but will not be drawn.
     pub fn unsupported_layer_types(&self) -> Vec<String> {
         let mut kinds: Vec<String> = self
@@ -463,6 +498,11 @@ fn parse_source(id: &str, value: &Json) -> Source {
         url: get("url").and_then(Json::as_str).map(str::to_owned),
         minzoom: get("minzoom").and_then(Json::as_u64).unwrap_or(0) as u8,
         maxzoom: get("maxzoom").and_then(Json::as_u64).unwrap_or(14) as u8,
+        attribution: get("attribution")
+            .and_then(Json::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned),
     }
 }
 
@@ -529,6 +569,103 @@ mod tests {
         let none =
             Style::parse(r##"{"version": 8, "sources": {}, "layers": []}"##).expect("parses");
         assert_eq!(none.sprite, None);
+    }
+
+    /// A style is data under someone's licence. The credit has to survive the
+    /// trip from the style into the renderer, or the host cannot show it.
+    #[test]
+    fn reads_the_credit_a_source_asks_for() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": {
+                "osm": {
+                    "type": "vector",
+                    "tiles": ["https://example.com/{z}/{x}/{y}.pbf"],
+                    "attribution": "© <a href=\"https://osm.org/copyright\">OpenStreetMap</a>"
+                },
+                "hills": {
+                    "type": "vector",
+                    "tiles": ["https://example.com/h/{z}/{x}/{y}.pbf"],
+                    "attribution": "  © Hills  "
+                },
+                "unused": {
+                    "type": "vector",
+                    "tiles": ["https://example.com/u/{z}/{x}/{y}.pbf"],
+                    "attribution": "© Nobody"
+                },
+                "bare": { "type": "vector", "tiles": ["https://example.com/b/{z}/{x}/{y}.pbf"] }
+            },
+            "layers": [
+                { "id": "bg", "type": "background" },
+                { "id": "b", "type": "fill", "source": "bare", "source-layer": "x" },
+                { "id": "h", "type": "fill", "source": "hills", "source-layer": "x" },
+                { "id": "w", "type": "fill", "source": "osm", "source-layer": "water" },
+                { "id": "l", "type": "symbol", "source": "osm", "source-layer": "place" }
+            ]
+        }))
+        .expect("parses");
+
+        // The HTML is kept whole -- the credit is a licence link, and the
+        // overlay that shows it renders HTML.
+        // Surrounding space is trimmed, an absent credit is not invented, and
+        // a source no drawable layer references is not credited.
+        assert_eq!(
+            style.attributions(),
+            vec![
+                "© Hills".to_string(),
+                "© <a href=\"https://osm.org/copyright\">OpenStreetMap</a>".to_string(),
+            ]
+        );
+    }
+
+    /// Two layers over one source must not credit it twice; the overlay would
+    /// print the same line side by side.
+    #[test]
+    fn credits_a_shared_source_once() {
+        let style = sample();
+        assert!(style.attributions().is_empty(), "no source declares one");
+
+        let credited = Style::from_json(&json!({
+            "version": 8,
+            "sources": {
+                "osm": {
+                    "type": "vector",
+                    "tiles": ["https://example.com/{z}/{x}/{y}.pbf"],
+                    "attribution": "© OpenStreetMap"
+                }
+            },
+            "layers": [
+                { "id": "a", "type": "fill", "source": "osm", "source-layer": "water" },
+                { "id": "b", "type": "line", "source": "osm", "source-layer": "roads" },
+                { "id": "c", "type": "symbol", "source": "osm", "source-layer": "place" }
+            ]
+        }))
+        .expect("parses");
+        assert_eq!(credited.attributions(), vec!["© OpenStreetMap".to_string()]);
+    }
+
+    /// The renderer magnifies the deepest tile it has past a source's maxzoom,
+    /// so the data is still on screen there and still has to be credited.
+    #[test]
+    fn keeps_the_credit_past_the_source_maxzoom() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": {
+                "osm": {
+                    "type": "vector",
+                    "tiles": ["https://example.com/{z}/{x}/{y}.pbf"],
+                    "maxzoom": 14,
+                    "attribution": "© OpenStreetMap"
+                }
+            },
+            "layers": [{
+                "id": "w", "type": "fill", "source": "osm", "source-layer": "water",
+                "minzoom": 4, "maxzoom": 12
+            }]
+        }))
+        .expect("parses");
+        // Well outside the layer's own zoom range, and past the source's.
+        assert_eq!(style.attributions().len(), 1);
     }
 
     fn sample() -> Style {

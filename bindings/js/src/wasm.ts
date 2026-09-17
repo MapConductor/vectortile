@@ -6,6 +6,19 @@
  * force a wasm fetch on pages that never render a tile.
  */
 
+/** Labels and icons drawn on a transparent ground. */
+export interface WasmLabelTile {
+    /** How many labels were placed. Zero means the tile is empty. */
+    readonly placed: number;
+    /**
+     * Takes the **premultiplied** RGBA pixels, leaving this empty. Crossing
+     * the wasm boundary copies, and a label tile is megabytes, so it is moved
+     * rather than cloned.
+     */
+    takePixels(): Uint8Array;
+    free(): void;
+}
+
 /** The subset of the generated binding this package uses. */
 export interface WasmRenderer {
     plan(z: number, x: number, y: number): string;
@@ -17,6 +30,59 @@ export interface WasmRenderer {
         data: Uint8Array,
         lengths: Uint32Array,
     ): Uint8Array;
+    /** The ground alone: fills, lines and circles, no labels or icons. */
+    renderGeometry(
+        z: number,
+        x: number,
+        y: number,
+        tileSize: number,
+        data: Uint8Array,
+        lengths: Uint32Array,
+    ): Uint8Array;
+    /** Labels and icons alone, on a transparent ground. */
+    renderLabels(
+        z: number,
+        x: number,
+        y: number,
+        tileSize: number,
+        data: Uint8Array,
+        lengths: Uint32Array,
+    ): WasmLabelTile;
+    /** Labels and icons on a transparent ground, encoded as a PNG. */
+    renderLabelsPng(
+        z: number,
+        x: number,
+        y: number,
+        tileSize: number,
+        data: Uint8Array,
+        lengths: Uint32Array,
+    ): WasmLabelTile;
+    /** Draws labels over pixels the caller already has, in place. */
+    drawLabels(
+        z: number,
+        x: number,
+        y: number,
+        tileSize: number,
+        rgba: Uint8Array,
+        data: Uint8Array,
+        lengths: Uint32Array,
+    ): number;
+    glyphsUrlTemplate(): string | undefined;
+    neededGlyphs(
+        z: number,
+        x: number,
+        y: number,
+        data: Uint8Array,
+        lengths: Uint32Array,
+    ): string;
+    addGlyphs(pbf: Uint8Array): number;
+    hasGlyphs(): boolean;
+    spriteUrls(pixelRatio: number): string;
+    addSprite(json: string, png: Uint8Array): number;
+    needsSprite(): boolean;
+    needsCpu(z: number, data: Uint8Array, lengths: Uint32Array): boolean;
+    /** Credits the style's sources ask to be shown. May contain HTML. */
+    attributions(): string;
     setStyle(styleJson: string): void;
     unresolvedSources(): string;
     setSourceTiles(

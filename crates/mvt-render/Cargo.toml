@@ -29,3 +29,7 @@ required-features = ["tessellate"]
 [[example]]
 name = "tessellate_compare"
 required-features = ["tessellate"]
+
+[[example]]
+name = "pipeline_cost"
+required-features = ["tessellate"]
