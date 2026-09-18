@@ -74,6 +74,23 @@ sync_web() {
     # Copied verbatim it makes the vendored wasm untrackable, which is how the
     # package ends up unbuildable from a clean checkout.
     rm -f "$dest/pkg/.gitignore"
+
+    # The version, and only the version. The copy's `package.json` is not this
+    # one: its scripts say the build lives here rather than there, which is the
+    # whole point of it being a copy. But the version has been hand-maintained
+    # on both sides, so the vendored renderer could silently stop being the one
+    # its version claims — and the React binding pins a range against it.
+    node -e '
+        const fs = require("fs");
+        const [from, to] = process.argv.slice(1);
+        const version = JSON.parse(fs.readFileSync(from, "utf8")).version;
+        const target = JSON.parse(fs.readFileSync(to, "utf8"));
+        if (target.version === version) process.exit(0);
+        target.version = version;
+        fs.writeFileSync(to, JSON.stringify(target, null, 2) + "\n");
+        console.error(`        version -> ${version}`);
+    ' "$root/bindings/js/package.json" "$dest/package.json"
+
     echo "web     -> $dest"
 }
 
