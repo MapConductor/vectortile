@@ -4,6 +4,9 @@ import org.json.JSONArray
 import java.io.Closeable
 import java.nio.ByteBuffer
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 
 /**
  * Renders MapLibre vector styles to raster PNG tiles.
@@ -19,6 +22,25 @@ class VectorTileRenderer private constructor(
     handle: Long,
 ) : Closeable {
     private val handle = AtomicLong(handle)
+
+    /**
+     * Keeps [close] from freeing the renderer while a native call is inside it.
+     *
+     * Tiles are drawn on the tile server's worker threads while the thread
+     * that owns the layer decides to drop it -- a provider switch, a page
+     * leaving, a style change. Freeing the handle then leaves those workers
+     * holding a pointer into freed memory, and whatever is allocated next
+     * writes over it: the process died inside `nativeRender` with a fault
+     * address made of style-layer name bytes, which is what the freed block
+     * held by the time it was read.
+     *
+     * Calls take the read side, so tiles still render in parallel. Only
+     * [close] takes the write side, and that is what makes it wait for the
+     * calls already inside the library -- bounded by one tile, since nothing
+     * here loops. A call that arrives after the free finds the handle cleared
+     * and throws instead of reading freed memory.
+     */
+    private val liveCalls = ReentrantReadWriteLock()
 
     companion object {
         const val DEFAULT_TILE_SIZE: Int = 512
@@ -44,11 +66,18 @@ class VectorTileRenderer private constructor(
         ): VectorTileRenderer = VectorTileRenderer(NativeRenderer.nativeNew(styleJson, displayTileSize))
     }
 
-    private fun requireHandle(): Long {
-        val value = handle.get()
-        check(value != 0L) { "VectorTileRenderer has been closed" }
-        return value
-    }
+    /**
+     * Runs one native call with the renderer held alive for its duration.
+     *
+     * The handle is read inside the lock. Reading it outside would race
+     * [close] again, which is the bug this exists to stop.
+     */
+    private inline fun <T> withRenderer(block: (Long) -> T): T =
+        liveCalls.read {
+            val value = handle.get()
+            check(value != 0L) { "VectorTileRenderer has been closed" }
+            block(value)
+        }
 
     /**
      * Source tiles needed to draw `z/x/y`, as JSON. Fetch them in order and
@@ -58,11 +87,11 @@ class VectorTileRenderer private constructor(
         z: Int,
         x: Int,
         y: Int,
-    ): String = NativeRenderer.nativePlan(requireHandle(), z, x, y)
+    ): String = withRenderer { handle -> NativeRenderer.nativePlan(handle, z, x, y) }
 
     /** The style's `glyphs` URL template, or null when it has none. */
     fun glyphsUrlTemplate(): String? =
-        NativeRenderer.nativeGlyphsUrlTemplate(requireHandle()).takeIf { it.isNotEmpty() }
+        withRenderer { handle -> NativeRenderer.nativeGlyphsUrlTemplate(handle) }.takeIf { it.isNotEmpty() }
 
     /**
      * Glyph URLs this tile's labels need and the renderer does not hold.
@@ -78,7 +107,7 @@ class VectorTileRenderer private constructor(
         tiles: List<ByteArray?>,
     ): List<String> {
         val (data, lengths) = pack(tiles)
-        val urls = JSONArray(NativeRenderer.nativeNeededGlyphs(requireHandle(), z, x, y, data, lengths))
+        val urls = JSONArray(withRenderer { handle -> NativeRenderer.nativeNeededGlyphs(handle, z, x, y, data, lengths) })
         return (0 until urls.length()).map { urls.getString(it) }
     }
 
@@ -86,7 +115,7 @@ class VectorTileRenderer private constructor(
      * Hands one fetched range to the renderer, which keeps it for every later
      * tile. Returns how many glyphs it gained.
      */
-    fun addGlyphs(pbf: ByteArray): Int = NativeRenderer.nativeAddGlyphs(requireHandle(), pbf)
+    fun addGlyphs(pbf: ByteArray): Int = withRenderer { handle -> NativeRenderer.nativeAddGlyphs(handle, pbf) }
 
     /**
      * The style's sprite pair — index then image — or an empty list when the
@@ -96,7 +125,7 @@ class VectorTileRenderer private constructor(
      * fetched before a single tile has been drawn.
      */
     fun spriteUrls(pixelRatio: Int = 1): List<String> {
-        val urls = JSONArray(NativeRenderer.nativeSpriteUrls(requireHandle(), pixelRatio))
+        val urls = JSONArray(withRenderer { handle -> NativeRenderer.nativeSpriteUrls(handle, pixelRatio) })
         return (0 until urls.length()).map { urls.getString(it) }
     }
 
@@ -113,11 +142,11 @@ class VectorTileRenderer private constructor(
         tiles: List<ByteArray?>,
     ): Boolean {
         val (data, lengths) = pack(tiles)
-        return NativeRenderer.nativeNeedsCpu(requireHandle(), z, data, lengths) != 0
+        return withRenderer { handle -> NativeRenderer.nativeNeedsCpu(handle, z, data, lengths) } != 0
     }
 
     /** Whether the style names a sprite the renderer has not been given. */
-    fun needsSprite(): Boolean = NativeRenderer.nativeNeedsSprite(requireHandle()) != 0
+    fun needsSprite(): Boolean = withRenderer { handle -> NativeRenderer.nativeNeedsSprite(handle) } != 0
 
     /**
      * Hands over the fetched pair, and returns how many icons the sheet holds.
@@ -130,7 +159,7 @@ class VectorTileRenderer private constructor(
     fun addSprite(
         indexJson: String,
         png: ByteArray,
-    ): Int = NativeRenderer.nativeAddSprite(requireHandle(), indexJson, png)
+    ): Int = withRenderer { handle -> NativeRenderer.nativeAddSprite(handle, indexJson, png) }
 
     /**
      * Draws this tile's labels onto pixels something else rasterised.
@@ -151,7 +180,7 @@ class VectorTileRenderer private constructor(
         tiles: List<ByteArray?>,
     ): Int {
         val (data, lengths) = pack(tiles)
-        return NativeRenderer.nativeDrawLabels(requireHandle(), z, x, y, tileSize, rgba, data, lengths)
+        return withRenderer { handle -> NativeRenderer.nativeDrawLabels(handle, z, x, y, tileSize, rgba, data, lengths) }
     }
 
     /** Draws a standalone transparent label tile without an RGBA JNI copy. */
@@ -165,9 +194,9 @@ class VectorTileRenderer private constructor(
         val (data, lengths) = pack(tiles)
         val placed = IntArray(1)
         val pixels =
-            NativeRenderer.nativeRenderLabels(
-                requireHandle(), z, x, y, tileSize, data, lengths, placed,
-            ) ?: return null
+            withRenderer { handle -> NativeRenderer.nativeRenderLabels(
+                handle, z, x, y, tileSize, data, lengths, placed,
+            ) } ?: return null
         return NativeLabelPixels(pixels, placed[0])
     }
 
@@ -186,8 +215,8 @@ class VectorTileRenderer private constructor(
         geometryOnly: Boolean = false,
     ): ByteArray {
         val (data, lengths) = pack(tiles)
-        return NativeRenderer.nativeRender(
-            requireHandle(),
+        return withRenderer { handle -> NativeRenderer.nativeRender(
+            handle,
             z,
             x,
             y,
@@ -195,7 +224,7 @@ class VectorTileRenderer private constructor(
             data,
             lengths,
             if (geometryOnly) 1 else 0,
-        )
+        ) }
     }
 
     /**
@@ -220,7 +249,7 @@ class VectorTileRenderer private constructor(
      * unchanged, only the paint applied to it — so recolouring needs no refetch.
      */
     fun setStyle(styleJson: String) {
-        NativeRenderer.nativeSetStyle(requireHandle(), styleJson)
+        withRenderer { handle -> NativeRenderer.nativeSetStyle(handle, styleJson) }
     }
 
     /**
@@ -234,10 +263,10 @@ class VectorTileRenderer private constructor(
         tileSize: Int,
         data: ByteArray,
         lengths: IntArray,
-    ): ByteBuffer = NativeRenderer.nativeTessellate(requireHandle(), z, x, y, tileSize, data, lengths)
+    ): ByteBuffer = withRenderer { handle -> NativeRenderer.nativeTessellate(handle, z, x, y, tileSize, data, lengths) }
 
     /** JSON array of layer `type` values in this style that will not be drawn. */
-    fun unsupportedLayerTypes(): String = NativeRenderer.nativeUnsupportedLayerTypes(requireHandle())
+    fun unsupportedLayerTypes(): String = withRenderer { handle -> NativeRenderer.nativeUnsupportedLayerTypes(handle) }
 
     /**
      * JSON array of the credits this style's sources ask to be shown.
@@ -246,7 +275,7 @@ class VectorTileRenderer private constructor(
      * and the sample basemap draws OpenStreetMap, whose licence requires the
      * credit. May contain HTML — the text is normally a link to the licence.
      */
-    fun attributions(): String = NativeRenderer.nativeAttributions(requireHandle())
+    fun attributions(): String = withRenderer { handle -> NativeRenderer.nativeAttributions(handle) }
 
     /**
      * Reasons the current style may not render as intended, as a JSON array of
@@ -256,12 +285,14 @@ class VectorTileRenderer private constructor(
      * Worth surfacing — the failure mode that matters is a blank tile, and a
      * style this renderer cannot use should say so.
      */
-    fun diagnostics(): String = NativeRenderer.nativeDiagnostics(requireHandle())
+    fun diagnostics(): String = withRenderer { handle -> NativeRenderer.nativeDiagnostics(handle) }
 
     /** Releases the native renderer. Safe to call more than once. */
     override fun close() {
-        // getAndSet keeps a double close from freeing the same pointer twice.
-        val value = handle.getAndSet(0L)
-        if (value != 0L) NativeRenderer.nativeFree(value)
+        liveCalls.write {
+            // getAndSet keeps a double close from freeing the same pointer twice.
+            val value = handle.getAndSet(0L)
+            if (value != 0L) NativeRenderer.nativeFree(value)
+        }
     }
 }

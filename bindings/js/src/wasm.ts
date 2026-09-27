@@ -98,7 +98,12 @@ export interface WasmRenderer {
 
 interface WasmModule {
     default: (input?: unknown) => Promise<unknown>;
-    VectorTileRenderer: new (styleJson: string) => WasmRenderer;
+    /**
+     * `displayTileSize` is the CSS px one tile covers on screen -- not the
+     * pixel count a render is asked for. It sets the size the style draws at
+     * and the zoom its expressions are read at; left out it is 512.
+     */
+    VectorTileRenderer: new (styleJson: string, displayTileSize?: number) => WasmRenderer;
 }
 
 let modulePromise: Promise<WasmModule> | null = null;

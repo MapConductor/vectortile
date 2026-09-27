@@ -158,8 +158,13 @@ export class TileRenderCore {
             resolveStyleText(options.style),
         ]);
 
-        const renderer = new wasm.VectorTileRenderer(styleText);
-        const core = new TileRenderCore(renderer, options.tileSize ?? 512, options);
+        // The renderer needs the CSS px a tile covers on screen, which is the
+        // declared tile size -- not the pixel count a render asks for (the
+        // label pass draws at twice the pixels). It sets the size the style
+        // draws at and the zoom its expressions are read at.
+        const tileSize = options.tileSize ?? 512;
+        const renderer = new wasm.VectorTileRenderer(styleText, tileSize);
+        const core = new TileRenderCore(renderer, tileSize, options);
         core.styleKey = digest(styleText);
         if (options.persistRenderedTiles) core.rendered = await RenderedTileCache.open();
         // Undrawn layer types are reported by the caller via
