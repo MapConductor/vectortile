@@ -118,6 +118,12 @@ unsafe fn hand_over(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) 
 #[no_mangle]
 pub unsafe extern "C" fn mvt_renderer_new(
     style_json: *const c_char,
+    // dp one tile covers where the host shows it. Not the pixel count a render
+    // is asked for: a label pass draws at twice the pixels, and a 256 dp tile
+    // is still 256 dp however many pixels it carries. Sets the size the style
+    // draws at and the zoom its expressions are read at. 512 is the usual
+    // answer; 0 means "use it".
+    display_tile_size: u32,
     error_out: *mut *mut c_char,
 ) -> *mut MvtRenderer {
     if !error_out.is_null() {
@@ -127,7 +133,15 @@ pub unsafe extern "C" fn mvt_renderer_new(
         let Some(style) = borrow_str(style_json) else {
             return Err("style_json is null or not valid UTF-8".to_string());
         };
-        Renderer::new(style).map_err(|error| error.to_string())
+        Renderer::new(style)
+            .map(|renderer| {
+                if display_tile_size == 0 {
+                    renderer
+                } else {
+                    renderer.with_display_tile_size(display_tile_size)
+                }
+            })
+            .map_err(|error| error.to_string())
     }));
 
     match result {

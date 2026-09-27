@@ -38,7 +38,10 @@ class VectorTileRenderer private constructor(
 
         /** @throws IllegalArgumentException if the style cannot be parsed. */
         @JvmStatic
-        fun create(styleJson: String): VectorTileRenderer = VectorTileRenderer(NativeRenderer.nativeNew(styleJson))
+        fun create(
+            styleJson: String,
+            displayTileSize: Int,
+        ): VectorTileRenderer = VectorTileRenderer(NativeRenderer.nativeNew(styleJson, displayTileSize))
     }
 
     private fun requireHandle(): Long {

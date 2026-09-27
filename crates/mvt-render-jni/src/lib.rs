@@ -56,6 +56,11 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNew
     mut env: JNIEnv,
     _class: JClass,
     style_json: JString,
+    // dp one tile covers where the host shows it. Not the pixel count a render
+    // is asked for: a label pass draws at twice the pixels, and a 256 dp tile
+    // is still 256 dp however many pixels it carries. Sets the size the style
+    // draws at and the zoom its expressions are read at.
+    display_tile_size: jint,
 ) -> jlong {
     guarded(&mut env, 0, |env| {
         let style: String = match env.get_string(&style_json) {
@@ -66,7 +71,10 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNew
             }
         };
         match Renderer::new(&style) {
-            Ok(renderer) => Box::into_raw(Box::new(renderer)) as jlong,
+            Ok(renderer) => {
+                let renderer = renderer.with_display_tile_size(display_tile_size.max(1) as u32);
+                Box::into_raw(Box::new(renderer)) as jlong
+            }
             Err(error) => {
                 throw(env, ILLEGAL_ARGUMENT, &error.to_string());
                 0

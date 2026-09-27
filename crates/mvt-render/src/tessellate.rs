@@ -17,6 +17,11 @@ use crate::model::{self, GeomType};
 use crate::style::{LayerKind, Style};
 
 /// The reference tile size the style spec's pixel units are defined against.
+/// dp of screen one tile covers, when the caller has not said otherwise.
+///
+/// Style dimensions are screen units, so turning them into pixels needs both
+/// the pixel count asked for and the size the tile will be shown at. 512 is
+/// the usual answer -- see `Renderer::display_tile_size`.
 const REFERENCE_TILE_SIZE: f32 = 512.0;
 
 /// One draw call: a run of vertices in [`Tessellation::vertices`].
@@ -105,9 +110,12 @@ pub fn tessellate(
     style: &Style,
     zoom: f64,
     tile_size: u32,
+    // dp the tile covers on screen; REFERENCE_TILE_SIZE when there is nothing
+    // better to say.
+    display_tile_size: f32,
     decoded: &[DecodedTile<'_>],
 ) -> Tessellation {
-    let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
+    let paint_scale = tile_size as f32 / display_tile_size.max(1.0);
     let mut out = Tessellation::default();
     // Which features of each data layer fall inside the overzoom window,
     // worked out once per data layer rather than once per style layer. A

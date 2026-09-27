@@ -18,8 +18,19 @@ internal object NativeRenderer {
         System.loadLibrary("mvt_render_jni")
     }
 
-    /** Returns an opaque handle; throws IllegalArgumentException on a bad style. */
-    external fun nativeNew(styleJson: String): Long
+    /**
+     * Returns an opaque handle; throws IllegalArgumentException on a bad style.
+     *
+     * [displayTileSize] is how many dp one tile covers where the map shows it
+     * -- not the pixel count a render is asked for. A label pass draws at
+     * twice the pixels, and a 256dp tile is still 256dp however many pixels it
+     * carries. It fixes the size the style draws at and the zoom its
+     * expressions are read at.
+     */
+    external fun nativeNew(
+        styleJson: String,
+        displayTileSize: Int,
+    ): Long
 
     external fun nativeFree(handle: Long)
 

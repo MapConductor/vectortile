@@ -77,9 +77,22 @@ pub struct VectorTileRenderer {
 #[wasm_bindgen]
 impl VectorTileRenderer {
     /// Parses a `style.json`. Throws if the style is unusable.
+    /// `displayTileSize` is how many CSS px one tile covers where the page
+    /// shows it -- not the pixel count a render is asked for (a label pass
+    /// draws at twice the pixels, and a 256 px tile is still 256 px wide on
+    /// screen however many pixels it carries). It sets the size the style
+    /// draws at and the zoom its expressions are read at; leaving it out
+    /// keeps 512, which is what a raster source declared at 512 gets.
     #[wasm_bindgen(constructor)]
-    pub fn new(style_json: &str) -> Result<VectorTileRenderer, JsError> {
+    pub fn new(
+        style_json: &str,
+        display_tile_size: Option<u32>,
+    ) -> Result<VectorTileRenderer, JsError> {
         Renderer::new(style_json)
+            .map(|renderer| match display_tile_size {
+                Some(dp) if dp > 0 => renderer.with_display_tile_size(dp),
+                _ => renderer,
+            })
             .map(|inner| VectorTileRenderer { inner })
             .map_err(|e| JsError::new(&e.to_string()))
     }

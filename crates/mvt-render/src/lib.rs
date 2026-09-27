@@ -120,6 +120,24 @@ pub struct Renderer {
     /// covers the whole style, so unlike glyphs there is nothing to accumulate
     /// -- it is either loaded or it is not.
     sprites: std::sync::RwLock<Option<sprite::SpriteSheet>>,
+    /// How many dp of screen one tile covers where these tiles are shown.
+    ///
+    /// Not the same as the pixel size a render is asked for: a label pass is
+    /// drawn at twice the pixels and scaled down, and a host may serve retina
+    /// tiles. What this fixes is the **size the style draws at**, because a
+    /// style's `text-size` and `line-width` are screen units:
+    ///
+    /// ```text
+    /// paint scale = output pixels / display dp
+    /// style zoom  = tile level + log2(display dp / 512)
+    /// ```
+    ///
+    /// 512 is the usual answer and the default -- a raster source declared at
+    /// 512 shows level z at map zoom z+1, which is the pairing the second line
+    /// encodes. ArcGIS's 3D SceneView is the reason this is a knob: it puts a
+    /// tile in a 256 dp slot whatever pixel size it was given, so a renderer
+    /// that assumes 512 draws every label and every road at half size there.
+    display_tile_size: u32,
 }
 
 /// One `{fontstack}/{range}.pbf` the renderer needs and does not have.
@@ -170,6 +188,7 @@ impl Renderer {
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
             label_tiles: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
+            display_tile_size: DEFAULT_TILE_SIZE,
         })
     }
 
@@ -179,7 +198,41 @@ impl Renderer {
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
             label_tiles: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
+            display_tile_size: DEFAULT_TILE_SIZE,
         }
+    }
+
+    /// Tells the renderer how many dp one tile covers on screen.
+    ///
+    /// Hosts that serve tiles of a declared size pass that size; the default
+    /// of 512 is what a raster source declared at 512 gets. See
+    /// [`Renderer::display_tile_size`] for why it is not the pixel count.
+    pub fn with_display_tile_size(mut self, dp: u32) -> Renderer {
+        self.display_tile_size = dp.max(1);
+        self
+    }
+
+    pub fn set_display_tile_size(&mut self, dp: u32) {
+        self.display_tile_size = dp.max(1);
+    }
+
+    /// dp of screen one tile covers. See the field for the two rules it sets.
+    pub fn display_tile_size(&self) -> u32 {
+        self.display_tile_size
+    }
+
+    /// The zoom the style is read at for a tile of this level.
+    ///
+    /// A tile is drawn for the zoom it will be *shown* at, which is its level
+    /// plus however many doublings its display size is above 256 dp, less the
+    /// one that 512 already carries.
+    fn style_zoom(&self, z: u8) -> f64 {
+        z as f64 + (self.display_tile_size as f64 / DEFAULT_TILE_SIZE as f64).log2()
+    }
+
+    /// Style units to pixels, for a render asked for at `tile_size` pixels.
+    fn paint_scale(&self, tile_size: u32) -> f32 {
+        tile_size as f32 / self.display_tile_size as f32
     }
 
     /// The style's `glyphs` URL template, if it has one.
@@ -234,7 +287,7 @@ impl Renderer {
     /// path, which is a better trade than decoding every tile twice to find
     /// out.
     pub fn needs_cpu(&self, z: u8, tile_data: &[Option<&[u8]>]) -> bool {
-        let zoom = z as f64;
+        let zoom = self.style_zoom(z);
         self.style
             .layers
             .iter()
@@ -304,7 +357,7 @@ impl Renderer {
         let Ok(store) = self.glyphs.read() else {
             return Vec::new();
         };
-        symbol::needed_glyphs(&self.style, z as f64, &decoded, &store)
+        symbol::needed_glyphs(&self.style, self.style_zoom(z), &decoded, &store)
     }
 
     pub fn style(&self) -> &Style {
@@ -464,7 +517,13 @@ impl Renderer {
             .collect();
 
         let tessellate_started = crate::clock::Stopwatch::start();
-        let result = tessellate::tessellate(&self.style, z as f64, tile_size, &views);
+        let result = tessellate::tessellate(
+            &self.style,
+            self.style_zoom(z),
+            tile_size,
+            self.display_tile_size as f32,
+            &views,
+        );
         let tessellate_ms = tessellate_started.ms();
 
         let mut packed = Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
@@ -560,8 +619,9 @@ impl Renderer {
             };
         raster::render_with_glyphs(
             &self.style,
-            z as f64,
+            self.style_zoom(z),
             tile_size,
+            self.display_tile_size as f32,
             &decoded,
             store_ref,
             sprites_ref,
@@ -586,11 +646,11 @@ impl Renderer {
         let Ok(sprites) = self.sprites.read() else {
             return Vec::new();
         };
-        let paint_scale = tile_size as f32 / 512.0;
+        let paint_scale = self.paint_scale(tile_size);
         let labels = symbol::collect(
             &self.style,
             symbol::Target {
-                zoom: z as f64,
+                zoom: self.style_zoom(z),
                 tile_size,
                 paint_scale,
                 xy: (0, 0),
@@ -641,11 +701,11 @@ impl Renderer {
         };
         let plan = self.plan(z, x, y);
         let decoded = self.decode_plan_labels(&plan, tile_data);
-        let paint_scale = tile_size as f32 / 512.0;
+        let paint_scale = self.paint_scale(tile_size);
         let labels = symbol::collect(
             &self.style,
             symbol::Target {
-                zoom: z as f64,
+                zoom: self.style_zoom(z),
                 tile_size,
                 paint_scale,
                 xy: (x, y),
@@ -701,11 +761,11 @@ impl Renderer {
         let decoded = self.decode_plan_labels(&plan, tile_data);
         let decode_ms = t0.ms();
         let t1 = crate::clock::Stopwatch::start();
-        let paint_scale = tile_size as f32 / 512.0;
+        let paint_scale = self.paint_scale(tile_size);
         let labels = symbol::collect(
             &self.style,
             symbol::Target {
-                zoom: z as f64,
+                zoom: self.style_zoom(z),
                 tile_size,
                 paint_scale,
                 xy: (x, y),
@@ -772,11 +832,11 @@ impl Renderer {
 
         let plan = self.plan(z, x, y);
         let decoded = self.decode_plan_labels(&plan, tile_data);
-        let paint_scale = tile_size as f32 / 512.0;
+        let paint_scale = self.paint_scale(tile_size);
         let labels = symbol::collect(
             &self.style,
             symbol::Target {
-                zoom: z as f64,
+                zoom: self.style_zoom(z),
                 tile_size,
                 paint_scale,
                 xy: (x, y),
@@ -940,6 +1000,40 @@ mod tests {
         }))
         .unwrap()
     }
+
+    /// The two rules the display size sets, and what they were before it
+    /// existed: a tile displayed at 512 dp reads the style at its own level
+    /// and draws one style unit per pixel.
+    #[test]
+    fn display_size_sets_the_style_zoom_and_the_paint_scale() {
+        let default = Renderer::new(MINIMAL_STYLE).expect("style");
+        assert_eq!(default.display_tile_size(), 512);
+        assert_eq!(default.style_zoom(12), 12.0);
+        assert_eq!(default.paint_scale(512), 1.0);
+        // The label pass asks for twice the pixels and is scaled back down.
+        assert_eq!(default.paint_scale(1024), 2.0);
+
+        // Half the dp is half the ground per tile, so the level that fills it
+        // is one deeper -- and the style has to be read one zoom shallower for
+        // the same view. ArcGIS's SceneView is the case this exists for.
+        let small = Renderer::new(MINIMAL_STYLE)
+            .expect("style")
+            .with_display_tile_size(256);
+        assert_eq!(small.style_zoom(12), 11.0);
+        assert_eq!(small.paint_scale(256), 1.0);
+        assert_eq!(small.paint_scale(512), 2.0);
+
+        // Whatever the size, a tile drawn at its own dp draws style units at
+        // face value. Getting this wrong is what made every label half height.
+        for dp in [256u32, 512, 1024] {
+            let renderer = Renderer::new(MINIMAL_STYLE)
+                .expect("style")
+                .with_display_tile_size(dp);
+            assert_eq!(renderer.paint_scale(dp), 1.0, "dp={dp}");
+        }
+    }
+
+    const MINIMAL_STYLE: &str = r#"{"version":8,"sources":{},"layers":[]}"#;
 
     fn render_sample(tile_size: u32) -> tiny_skia::Pixmap {
         let renderer = Renderer::from_style(test_style());
@@ -1131,7 +1225,7 @@ mod tests {
             labels_only: false,
         }];
 
-        let (pixmap, stats) = raster::render(&test_style(), 10.0, 512, &decoded).expect("render");
+        let (pixmap, stats) = raster::render(&test_style(), 10.0, 512, raster::REFERENCE_TILE_SIZE, &decoded).expect("render");
         assert_eq!(stats.features_drawn, 1);
 
         let (r, g, b, _) = pixel(&pixmap, 100, 100);

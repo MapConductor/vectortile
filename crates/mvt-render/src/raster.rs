@@ -17,7 +17,12 @@ use crate::symbol;
 use crate::text::GlyphStore;
 
 /// The reference tile size the style spec's pixel units are defined against.
-const REFERENCE_TILE_SIZE: f32 = 512.0;
+/// dp of screen one tile covers, when the caller has not said otherwise.
+///
+/// Style dimensions are screen units, so turning them into pixels needs both
+/// the pixel count asked for and the size the tile will be shown at. 512 is
+/// the usual answer -- see `Renderer::display_tile_size`.
+pub const REFERENCE_TILE_SIZE: f32 = 512.0;
 
 /// A source tile that has been fetched and decoded, ready to draw.
 pub struct DecodedTile {
@@ -46,12 +51,14 @@ pub fn render(
     style: &Style,
     zoom: f64,
     tile_size: u32,
+    display_tile_size: f32,
     decoded: &[DecodedTile],
 ) -> Option<(Pixmap, RenderStats)> {
     render_with_glyphs(
         style,
         zoom,
         tile_size,
+        display_tile_size,
         decoded,
         &GlyphStore::new(),
         None,
@@ -101,13 +108,15 @@ pub fn render_with_glyphs(
     style: &Style,
     zoom: f64,
     tile_size: u32,
+    // dp the tile covers on screen; REFERENCE_TILE_SIZE when unknown.
+    display_tile_size: f32,
     decoded: &[DecodedTile],
     glyphs: &GlyphStore,
     sprites: Option<&crate::sprite::SpriteSheet>,
     tile_xy: (u32, u32),
 ) -> Option<(Pixmap, RenderStats)> {
     let mut pixmap = Pixmap::new(tile_size, tile_size)?;
-    let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
+    let paint_scale = tile_size as f32 / display_tile_size.max(1.0);
     let mut stats = RenderStats {
         layers_drawn: 0,
         features_drawn: 0,
