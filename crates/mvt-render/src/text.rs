@@ -102,9 +102,26 @@ impl GlyphStore {
     }
 
     /// The first face in `fonts` that has this codepoint.
+    ///
+    /// A range that arrived without a name is tried last. The name inside a
+    /// `.pbf` is redundant -- a range is fetched from `{fontstack}/{range}.pbf`
+    /// and is by construction the stack that was asked for -- and servers in
+    /// the wild leave it out: every range versatiles serves carries its 256
+    /// glyphs and nothing else, so every one of them was filed under the empty
+    /// name and no lookup ever found it. The whole map drew its labels in
+    /// invisible ink, placed correctly and coloured with nothing.
+    ///
+    /// A named face always wins, so this changes nothing for a server that
+    /// fills the field in. What it cannot do is tell two nameless stacks
+    /// apart: a style asking for both a regular and a bold face gets whichever
+    /// of them arrived last wherever they hold the same character. Telling
+    /// them apart takes the name from the side that knows it -- the caller
+    /// that chose the URL -- which is an argument `add_glyphs` does not have
+    /// yet.
     pub fn glyph(&self, fonts: &[String], code: u32) -> Option<&Glyph> {
         fonts
             .iter()
+            .chain(std::iter::once(&String::new()))
             .find_map(|name| self.faces.get(name).and_then(|face| face.get(&code)))
     }
 
@@ -804,6 +821,47 @@ mod tests {
             top: height as i32,
             advance,
         }
+    }
+
+    /// A range that arrived without a name still draws.
+    ///
+    /// Not a hypothetical: versatiles serves every range as its 256 glyphs and
+    /// nothing else, and the whole map's labels went invisible because of it.
+    #[test]
+    fn a_nameless_range_still_answers_for_the_stack_that_asked() {
+        let mut store = GlyphStore::new();
+        let mut glyphs = HashMap::new();
+        glyphs.insert(65, solid(65, 4, 6, 5));
+        store.insert(FontStack {
+            name: String::new(),
+            range: String::new(),
+            glyphs,
+        });
+        let wanted = vec!["noto_sans_regular".to_string()];
+        assert!(store.glyph(&wanted, 65).is_some());
+        assert!(store.glyph(&wanted, 66).is_none(), "invented a glyph");
+    }
+
+    /// A named face is still preferred, so a well-formed server is unaffected.
+    #[test]
+    fn a_named_face_wins_over_a_nameless_one() {
+        let mut store = GlyphStore::new();
+        let mut nameless = HashMap::new();
+        nameless.insert(65, solid(65, 4, 6, 5));
+        store.insert(FontStack {
+            name: String::new(),
+            range: String::new(),
+            glyphs: nameless,
+        });
+        let mut named = HashMap::new();
+        named.insert(65, solid(65, 9, 6, 11));
+        store.insert(FontStack {
+            name: "F".into(),
+            range: "0-255".into(),
+            glyphs: named,
+        });
+        let glyph = store.glyph(&["F".to_string()], 65).expect("the named face");
+        assert_eq!(glyph.advance, 11);
     }
 
     fn store_with(glyphs: Vec<Glyph>) -> (GlyphStore, Vec<String>) {
