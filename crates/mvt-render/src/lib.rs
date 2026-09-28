@@ -116,6 +116,10 @@ pub struct Renderer {
     /// Neighbouring tiles decoded for their labels, kept so the ring around a
     /// tile is decoded once between the nine tiles that want it.
     label_tiles: std::sync::RwLock<Vec<(LabelTileKey, std::sync::Arc<model::Tile>)>>,
+    /// Source tiles decoded in full, kept for the same reason one level up:
+    /// every child of a magnified tile decodes the whole of its ancestor, and
+    /// two levels down that is sixteen decodes of one tile.
+    source_tiles: std::sync::RwLock<Vec<(LabelTileKey, std::sync::Arc<model::Tile>)>>,
     /// The style's sprite sheet, once the host has fetched it. One sheet
     /// covers the whole style, so unlike glyphs there is nothing to accumulate
     /// -- it is either loaded or it is not.
@@ -174,6 +178,11 @@ type LabelTileKey = (String, u8, u32, u32);
 /// wants the eight around it, so this is about two screens' worth of ring.
 const LABEL_TILE_CACHE: usize = 48;
 
+/// Fully decoded source tiles kept. Far fewer than the label cache because a
+/// full decode holds every layer: a street-zoom tile is megabytes, and the
+/// working set is the handful of ancestors a screen magnifies from.
+const SOURCE_TILE_CACHE: usize = 8;
+
 /// Where a style's sprite sheet lives: an index and the image it indexes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpriteRequest {
@@ -187,6 +196,7 @@ impl Renderer {
             style: Style::parse(style_json)?,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
             label_tiles: std::sync::RwLock::new(Vec::new()),
+            source_tiles: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
             display_tile_size: DEFAULT_TILE_SIZE,
         })
@@ -197,6 +207,7 @@ impl Renderer {
             style,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
             label_tiles: std::sync::RwLock::new(Vec::new()),
+            source_tiles: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
             display_tile_size: DEFAULT_TILE_SIZE,
         }
@@ -712,6 +723,23 @@ impl Renderer {
         cache.truncate(LABEL_TILE_CACHE);
     }
 
+    fn cached_source_tile(&self, key: &LabelTileKey) -> Option<std::sync::Arc<model::Tile>> {
+        let cache = self.source_tiles.read().ok()?;
+        cache
+            .iter()
+            .find(|(cached, _)| cached == key)
+            .map(|(_, tile)| tile.clone())
+    }
+
+    fn remember_source_tile(&self, key: LabelTileKey, tile: std::sync::Arc<model::Tile>) {
+        let Ok(mut cache) = self.source_tiles.write() else {
+            return;
+        };
+        cache.retain(|(cached, _)| cached != &key);
+        cache.insert(0, (key, tile));
+        cache.truncate(SOURCE_TILE_CACHE);
+    }
+
     /// Every label this tile places, with what it says and where it lands.
     /// For working out why one is missing.
     #[doc(hidden)]
@@ -989,10 +1017,24 @@ impl Renderer {
                     }
                 }
             } else {
-                let Ok(tile) = mvt::decode(bytes) else {
-                    continue;
-                };
-                std::sync::Arc::new(tile)
+                // Cached like the label decode above, and for the same reason
+                // magnified: every child of a source tile decodes the whole of
+                // it, so a tile drawn two levels down is decoded sixteen times
+                // for sixteen tiles that then each draw a sixteenth of it.
+                // ArcGIS's 3D view asks for around 120 tiles to fill an iPad,
+                // and they come from a handful of ancestors.
+                let key = (request.source_id.clone(), request.z, request.x, request.y);
+                match self.cached_source_tile(&key) {
+                    Some(tile) => tile,
+                    None => {
+                        let Ok(tile) = mvt::decode(bytes) else {
+                            continue;
+                        };
+                        let tile = std::sync::Arc::new(tile);
+                        self.remember_source_tile(key, tile.clone());
+                        tile
+                    }
+                }
             };
             decoded.push(DecodedTile {
                 source_id: request.source_id.clone(),
