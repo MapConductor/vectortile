@@ -186,7 +186,12 @@ pub fn render_with_glyphs(
         );
         // Two pixels of padding: labels that only just clear each other read
         // as one smear at small sizes.
-        let placed = symbol::place(labels);
+        // Placement ran over a tile of margin so that neighbouring tiles agree;
+        // only what reaches this tile is drawn.
+        let placed: Vec<_> = symbol::place(labels)
+            .into_iter()
+            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .collect();
         if !placed.is_empty() {
             stats.layers_drawn += 1;
             stats.features_drawn += placed.len();
@@ -202,12 +207,35 @@ pub fn render_with_glyphs(
 /// The part of an overzoomed parent this tile shows, in the parent's units,
 /// with an eighth of the window as margin. `None` when the tile is its own.
 pub(crate) fn overzoom_window(decoded: &DecodedTile, extent: u32) -> Option<[f32; 4]> {
+    window_with_margin(decoded, extent, 0.125)
+}
+
+/// As [`overzoom_window`], but a whole tile of margin on every side.
+///
+/// Labels need it. A tile does not decide on its own which of them to draw: it
+/// runs a collision contest, and a label that straddles a seam is drawn half by
+/// each neighbour, so the two must reach the same verdict. They only do that if
+/// they judge it against the same rivals -- which means each tile has to see a
+/// whole tile beyond its own edge, exactly what the ring of neighbours gives an
+/// unmagnified tile.
+///
+/// An eighth of a tile was not enough and the difference was visible: 中野区
+/// sits 19 px east of the seam and 高円寺 40 px west of it. The east tile could
+/// not see 高円寺, so it drew 中野区; the west tile saw both, gave the spot to
+/// 高円寺, and drew nothing -- leaving 中野区 sliced down the middle at the
+/// seam. Nothing was wrong at 512 dp because nothing was magnified there and
+/// the window did not exist at all.
+pub(crate) fn label_window(decoded: &DecodedTile, extent: u32) -> Option<[f32; 4]> {
+    window_with_margin(decoded, extent, 1.0)
+}
+
+fn window_with_margin(decoded: &DecodedTile, extent: u32, margin_spans: f32) -> Option<[f32; 4]> {
     if decoded.scale <= 1.0 {
         return None;
     }
     let extent = extent as f32;
     let span = extent / decoded.scale;
-    let margin = span / 8.0;
+    let margin = span * margin_spans;
     Some([
         decoded.offset_x * extent - margin,
         decoded.offset_y * extent - margin,

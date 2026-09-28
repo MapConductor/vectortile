@@ -687,6 +687,9 @@ impl Renderer {
             sprites.as_ref(),
         );
         symbol::place(labels)
+            .into_iter()
+            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .collect::<Vec<_>>()
             .iter()
             .map(|label| label.paint.size)
             .collect()
@@ -742,6 +745,9 @@ impl Renderer {
             sprites.as_ref(),
         );
         symbol::place(labels)
+            .into_iter()
+            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .collect::<Vec<_>>()
             .into_iter()
             .map(|label| (label.content, label.bounds, label.sort_key))
             .collect()
@@ -801,7 +807,10 @@ impl Renderer {
             &store,
             sprites.as_ref(),
         );
-        let placed = symbol::place(labels);
+        let placed = symbol::place(labels)
+            .into_iter()
+            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .collect::<Vec<_>>();
         let collect_ms = t1.ms();
         if placed.is_empty() {
             return Ok(0);
@@ -872,7 +881,10 @@ impl Renderer {
             &store,
             sprites.as_ref(),
         );
-        let placed = symbol::place(labels);
+        let placed = symbol::place(labels)
+            .into_iter()
+            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .collect::<Vec<_>>();
         if placed.is_empty() {
             return Ok((Vec::new(), 0));
         }

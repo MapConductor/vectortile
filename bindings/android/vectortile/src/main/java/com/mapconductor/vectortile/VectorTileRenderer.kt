@@ -59,8 +59,9 @@ class VectorTileRenderer private constructor(
          *     from the source level that size belongs to.
          * 15: the whole background stack, not its last layer.
          * 16: magnified geometry lands inside its tile on the GPU path.
+         * 17: labels judged against a tile of margin, so neighbours agree.
          */
-        const val OUTPUT_VERSION: Int = 16
+        const val OUTPUT_VERSION: Int = 17
 
         /** @throws IllegalArgumentException if the style cannot be parsed. */
         @JvmStatic

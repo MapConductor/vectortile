@@ -129,7 +129,7 @@ export class TileRenderCore {
      * says*, not by *what the renderer did with it*. Kept in step with the
      * Android and iOS bindings: they cache the output of the same core.
      */
-    static readonly outputVersion = 16;
+    static readonly outputVersion = 17;
 
     /**
      * Told when glyphs arrive and the tiles already on screen are missing

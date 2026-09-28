@@ -196,7 +196,7 @@ pub fn needed_glyphs(
                 continue;
             }
 
-            let window = crate::raster::overzoom_window(decoded_tile, data_layer.extent);
+            let window = crate::raster::label_window(decoded_tile, data_layer.extent);
             for feature in &data_layer.features {
                 // Most of an overzoomed parent is nowhere near this tile.
                 if let Some(window) = window {
@@ -318,7 +318,7 @@ pub fn collect(
                 continue;
             }
 
-            let window = crate::raster::overzoom_window(decoded_tile, data_layer.extent);
+            let window = crate::raster::label_window(decoded_tile, data_layer.extent);
             for feature in &data_layer.features {
                 // Most of an overzoomed parent is nowhere near this tile.
                 if let Some(window) = window {
@@ -483,9 +483,27 @@ pub fn collect(
                     if avoid_edges(layer, &ctx) && leaves_tile(bounds, tile_size) {
                         continue;
                     }
-                    // Most of a neighbour's tile is of no interest here; what is,
-                    // is the label near the shared edge that reaches across it.
-                    if !touches_tile(bounds, tile_size) {
+                    // Kept with a whole tile of margin, not just the ones that
+                    // reach across the edge.
+                    //
+                    // The contest below is what decides which labels survive,
+                    // and neighbouring tiles must reach the same verdict about
+                    // a label that straddles their seam or it gets drawn by one
+                    // of them and sliced down the middle. They only do that if
+                    // they judge it against the same rivals, and a rival that
+                    // does not itself touch this tile still decides the verdict:
+                    // 高円寺 sits 40 px west of a seam and 中野区 19 px east of
+                    // it, overlapping. The west tile saw both and gave the spot
+                    // to 高円寺; the east tile could not see 高円寺 at all, so it
+                    // drew 中野区 -- whose left 6 px belong to the west tile,
+                    // which had drawn nothing there.
+                    //
+                    // A margin of one tile is exactly the data the ring of
+                    // neighbours provides, so it costs no extra fetch, and
+                    // anything further away cannot overlap a label that touches
+                    // this tile. What does not touch the tile is dropped after
+                    // placement instead of before it.
+                    if !touches_tile_within(bounds, tile_size, tile_size as f32) {
                         continue;
                     }
 
@@ -543,9 +561,14 @@ fn avoid_edges(layer: &Layer, ctx: &Ctx) -> bool {
 }
 
 /// Whether any of the label lands on this tile at all.
-fn touches_tile(bounds: [f32; 4], tile_size: u32) -> bool {
-    let size = tile_size as f32;
-    bounds[2] > 0.0 && bounds[3] > 0.0 && bounds[0] < size && bounds[1] < size
+pub(crate) fn touches_tile(bounds: [f32; 4], tile_size: u32) -> bool {
+    touches_tile_within(bounds, tile_size, 0.0)
+}
+
+/// As [`touches_tile`], but against the tile grown by `margin` on every side.
+fn touches_tile_within(bounds: [f32; 4], tile_size: u32, margin: f32) -> bool {
+    let size = tile_size as f32 + margin;
+    bounds[2] > -margin && bounds[3] > -margin && bounds[0] < size && bounds[1] < size
 }
 
 fn leaves_tile(bounds: [f32; 4], tile_size: u32) -> bool {
@@ -1485,6 +1508,27 @@ mod tests {
     /// most. Without it, a collision is settled by whichever the tile happened
     /// to list first -- so a village can take the place of a city.
     #[test]
+    /// A label a whole tile away is still a contestant.
+    ///
+    /// Neighbouring tiles have to reach the same verdict about a label that
+    /// straddles their seam, and a rival that touches only one of them decides
+    /// that verdict. The real pair: 高円寺 40 px west of a seam, 中野区 19 px
+    /// east of it and overlapping it. With the old rule the east tile could
+    /// not see 高円寺, kept 中野区, and drew it with its left 6 px missing --
+    /// they belonged to the west tile, which had given the spot to 高円寺.
+    #[test]
+    fn a_rival_outside_the_tile_still_counts() {
+        // 高円寺 as the east tile sees it: entirely west of x = 0.
+        let kouenji = [-40.0, 142.0, -8.0, 155.0];
+        assert!(!touches_tile(kouenji, 256), "it does not reach into the tile");
+        assert!(
+            touches_tile_within(kouenji, 256, 256.0),
+            "but it is within a tile of it, so it must still be judged"
+        );
+        // Two tiles away it cannot overlap anything that touches this tile.
+        assert!(!touches_tile_within([-600.0, 0.0, -560.0, 20.0], 256, 256.0));
+    }
+
     fn places_in_the_order_the_style_asked_for() {
         let entry = |x: f32, name: &str, key: f64| {
             let mut l = label(x, 100.0, 60.0, 20.0, false);
@@ -1573,8 +1617,10 @@ mod tests {
             placed[0].bounds
         );
 
-        // One in the middle of the neighbour reaches nothing here and is not
-        // worth carrying.
+        // One in the middle of the neighbour draws nothing here, but it is
+        // still carried: it may be the rival that decides whether a label on
+        // the seam is drawn, and this tile has to reach the same verdict about
+        // that as the neighbour does. It is dropped after placement instead.
         let far = crate::raster::DecodedTile {
             source_id: "src".into(),
             tile: point_tile("place", "AB", 2048, 2048),
@@ -1583,19 +1629,50 @@ mod tests {
             offset_y: 0.0,
             labels_only: true,
         };
-        assert!(collect(
+        let carried = collect(
             &style,
             Target {
                 zoom: 12.0,
                 tile_size: 512,
                 paint_scale: 1.0,
-                xy: (1, 0)
+                xy: (1, 0),
             },
             &[far],
             &store,
-            None
-        )
-        .is_empty());
+            None,
+        );
+        assert_eq!(carried.len(), 1, "a rival within a tile must still be judged");
+        assert!(
+            !touches_tile(carried[0].bounds, 512),
+            "but it draws nothing here, got {:?}",
+            carried[0].bounds
+        );
+
+        // Two tiles away it cannot overlap anything this tile draws.
+        let beyond = crate::raster::DecodedTile {
+            source_id: "src".into(),
+            tile: point_tile("place", "AB", 2048, 2048),
+            scale: 1.0,
+            offset_x: 2.0,
+            offset_y: 0.0,
+            labels_only: true,
+        };
+        assert!(
+            collect(
+                &style,
+                Target {
+                    zoom: 12.0,
+                    tile_size: 512,
+                    paint_scale: 1.0,
+                    xy: (2, 0),
+                },
+                &[beyond],
+                &store,
+                None,
+            )
+            .is_empty(),
+            "a label two tiles away is not worth carrying"
+        );
     }
 
     /// A district's polygon is cut at every tile it crosses and each piece
