@@ -16,14 +16,6 @@ use crate::filter::CompiledFilter;
 use crate::model::{self, GeomType};
 use crate::style::{LayerKind, Style};
 
-/// The reference tile size the style spec's pixel units are defined against.
-/// dp of screen one tile covers, when the caller has not said otherwise.
-///
-/// Style dimensions are screen units, so turning them into pixels needs both
-/// the pixel count asked for and the size the tile will be shown at. 512 is
-/// the usual answer -- see `Renderer::display_tile_size`.
-const REFERENCE_TILE_SIZE: f32 = 512.0;
-
 /// One draw call: a run of vertices in [`Tessellation::vertices`].
 ///
 /// Colour lives on the vertices, not here. A style layer may paint each
@@ -110,7 +102,7 @@ pub fn tessellate(
     style: &Style,
     zoom: f64,
     tile_size: u32,
-    // dp the tile covers on screen; REFERENCE_TILE_SIZE when there is nothing
+    // dp the tile covers on screen; `raster::REFERENCE_TILE_SIZE` when there is nothing
     // better to say.
     display_tile_size: f32,
     decoded: &[DecodedTile<'_>],

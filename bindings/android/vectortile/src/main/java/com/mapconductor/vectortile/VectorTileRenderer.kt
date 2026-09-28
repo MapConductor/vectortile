@@ -55,8 +55,10 @@ class VectorTileRenderer private constructor(
          *
          * 1: fills, lines, circles.
          * 2: labels.
+         * 14: drawn for the screen size the host shows a tile at, and read
+         *     from the source level that size belongs to.
          */
-        const val OUTPUT_VERSION: Int = 13
+        const val OUTPUT_VERSION: Int = 14
 
         /** @throws IllegalArgumentException if the style cannot be parsed. */
         @JvmStatic

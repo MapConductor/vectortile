@@ -58,7 +58,7 @@ pub mod fixtures;
 pub use color::Color;
 pub use raster::{DecodedTile, RenderStats};
 pub use style::{Layer, LayerKind, Source, Style, StyleError};
-pub use tile::{plan_tile, SourceTileRequest, TilePlan};
+pub use tile::{plan_tile, plan_tile_at, SourceTileRequest, TilePlan};
 
 /// Tile size used when the caller does not specify one. Matches the SDK cores'
 /// `RasterLayerSource.DEFAULT_TILE_SIZE`.
@@ -425,7 +425,34 @@ impl Renderer {
     /// The source tiles needed to draw `z/x/y`, in the order the bytes must be
     /// passed back to [`Renderer::render`].
     pub fn plan(&self, z: u8, x: u32, y: u32) -> TilePlan {
-        plan_tile(&self.style, z, x, y)
+        plan_tile_at(
+            &self.style,
+            z,
+            x,
+            y,
+            self.style_zoom(z),
+            self.source_zoom_offset(),
+        )
+    }
+
+    /// How many levels shallower than the tile its data is read from.
+    ///
+    /// A tile shown across 256 dp sits where a 512 dp host would show the
+    /// level above it, so it has to be drawn from that level's data as well as
+    /// its paint -- otherwise two hosts looking at the same ground draw
+    /// different maps, because a vector source's content changes by level.
+    ///
+    /// Never negative: sourcing *deeper* than the tile would mean fetching
+    /// four tiles for one, which is not what magnification does, and a host
+    /// that shows tiles larger than 512 dp is better served by the level it
+    /// was given.
+    fn source_zoom_offset(&self) -> u8 {
+        let levels = (DEFAULT_TILE_SIZE as f64 / self.display_tile_size as f64).log2();
+        if levels <= 0.0 {
+            0
+        } else {
+            levels.round() as u8
+        }
     }
 
     /// Rasterises `z/x/y` and returns PNG bytes.
@@ -1031,6 +1058,85 @@ mod tests {
                 .with_display_tile_size(dp);
             assert_eq!(renderer.paint_scale(dp), 1.0, "dp={dp}");
         }
+    }
+
+    /// A 256 dp host is shown the level above's map, so it has to be drawn
+    /// from the level above's data too. Getting this wrong is invisible in the
+    /// sizes and obvious in the content: at zoom 6.5 the z=6 tile carries the
+    /// 新潟市 label and z=7 does not, so the two hosts drew different maps.
+    #[test]
+    fn a_smaller_display_sources_one_level_shallower() {
+        let style = r#"{
+            "version": 8,
+            "sources": {
+                "s": { "type": "vector", "tiles": ["https://example.test/{z}/{x}/{y}.pbf"], "maxzoom": 14 }
+            },
+            "layers": [
+                { "id": "l", "type": "line", "source": "s", "source-layer": "roads" }
+            ]
+        }"#;
+        let at512 = Renderer::new(style).expect("style");
+        assert_eq!(at512.source_zoom_offset(), 0);
+        let urls: Vec<_> = at512.plan(7, 113, 50).requests.iter().map(|r| r.url.clone()).collect();
+        assert!(urls[0].contains("/7/113/50"), "512 dp draws its own level: {urls:?}");
+
+        let at256 = Renderer::new(style).expect("style").with_display_tile_size(256);
+        assert_eq!(at256.source_zoom_offset(), 1);
+        let request = &at256.plan(7, 113, 50).requests[0];
+        assert!(request.url.contains("/6/56/25"), "256 dp draws the parent: {}", request.url);
+        // Magnified, and placed in the quadrant the tile came from.
+        assert_eq!(request.scale, 2.0);
+        assert_eq!(request.offset_x, 0.5);
+        assert_eq!(request.offset_y, 0.0);
+    }
+
+    /// A label still lands when the tile is drawn from its parent's data.
+    ///
+    /// Sourcing a level shallower is the same magnification the renderer does
+    /// past a source's maxzoom, and the label pass has to follow the request's
+    /// scale and offset like the geometry does. The geometry path had a test
+    /// for that and the label path did not.
+    #[test]
+    fn labels_survive_being_sourced_from_the_parent() {
+        let style = Style::parse(
+            &serde_json::json!({
+                "version": 8,
+                "glyphs": "https://example.test/{fontstack}/{range}.pbf",
+                "sources": { "s": { "type": "vector", "tiles": ["https://example.test/{z}/{x}/{y}.pbf"] } },
+                "layers": [{
+                    "id": "labels",
+                    "type": "symbol",
+                    "source": "s",
+                    "source-layer": "place",
+                    "layout": { "text-field": "{name}", "text-font": ["F"], "text-size": 20 },
+                    "paint": { "text-color": "#000000" }
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let renderer = Renderer::from_style(style).with_display_tile_size(256);
+        renderer.add_glyphs(&glyph_pbf("F", &[0x41])).unwrap();
+
+        // A point in the parent's north-west quadrant, which is the child
+        // tile (z+1, 2x, 2y) the plan will magnify into.
+        let tile = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "place".into(),
+            extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Point,
+                points: vec![(1024, 1024)],
+                props: vec![("name".into(), "A".into())],
+            }],
+        }]);
+
+        let plan = renderer.plan(11, 1024, 600);
+        assert_eq!(plan.requests[0].z, 10, "sources the parent: {plan:?}");
+        let placed = renderer
+            .render_labels_rgba(11, 1024, 600, 256, &[Some(&tile)])
+            .expect("draws a label tile")
+            .1;
+        assert!(placed > 0, "the parent's label was lost when magnified");
     }
 
     const MINIMAL_STYLE: &str = r#"{"version":8,"sources":{},"layers":[]}"#;
