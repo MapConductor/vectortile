@@ -30,12 +30,26 @@ describe('wasm renderer', () => {
     let glyphBytes;
     let styleText;
 
-    /** One entry per plan request, the same bundled tile answering each. */
+    /**
+     * One entry per plan request: the bundled tile for the tile itself, and
+     * nothing for the ring of neighbours.
+     *
+     * The neighbours used to be handed the same bytes, which is not something
+     * a tile server can do: a vector source clips its features to the tile
+     * they belong to, so the same name in two neighbours is the same feature
+     * in the same place. Repeating one tile nine times instead puts nine
+     * copies of every label at nine different places, and the labeller --
+     * which keeps one copy per name per patch of world -- then quite correctly
+     * kept a copy belonging to a neighbour and drew nothing here. An empty
+     * neighbour is an ordinary answer, and the one this fixture can tell the
+     * truth with.
+     */
     const tiles = () => {
         const plan = JSON.parse(renderer.plan(target.z, target.x, target.y));
-        const lengths = new Uint32Array(plan.length).fill(tileBytes.byteLength);
-        const data = new Uint8Array(tileBytes.byteLength * plan.length);
-        plan.forEach((_, i) => data.set(tileBytes, i * tileBytes.byteLength));
+        const lengths = new Uint32Array(plan.length);
+        lengths[0] = tileBytes.byteLength;
+        const data = new Uint8Array(tileBytes.byteLength);
+        data.set(tileBytes, 0);
         return { data, lengths };
     };
 
