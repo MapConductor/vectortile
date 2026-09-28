@@ -44,6 +44,31 @@ impl Color {
         }
     }
 
+    /// `self` painted over `under`, in straight (non-premultiplied) RGBA.
+    ///
+    /// What a style means by stacking two layers that both cover the whole
+    /// tile. Keeping only the top one is wrong whenever it is not opaque, and
+    /// real styles lean on that: versatiles' colorful paints its cream
+    /// background and then four `background-opacity: 0` layers as slots for
+    /// other layers to be inserted into. Taking the last of those as "the
+    /// background" left every tile transparent.
+    pub fn over(self, under: Color) -> Color {
+        if self.a >= 1.0 || under.a <= 0.0 {
+            return self;
+        }
+        if self.a <= 0.0 {
+            return under;
+        }
+        let a = self.a + under.a * (1.0 - self.a);
+        let mix = |top: f32, bottom: f32| (top * self.a + bottom * under.a * (1.0 - self.a)) / a;
+        Color {
+            r: mix(self.r, under.r),
+            g: mix(self.g, under.g),
+            b: mix(self.b, under.b),
+            a,
+        }
+    }
+
     pub fn to_tiny_skia(self) -> tiny_skia::Color {
         tiny_skia::Color::from_rgba(
             self.r.clamp(0.0, 1.0),

@@ -57,8 +57,10 @@ class VectorTileRenderer private constructor(
          * 2: labels.
          * 14: drawn for the screen size the host shows a tile at, and read
          *     from the source level that size belongs to.
+         * 15: the whole background stack, not its last layer.
+         * 16: magnified geometry lands inside its tile on the GPU path.
          */
-        const val OUTPUT_VERSION: Int = 14
+        const val OUTPUT_VERSION: Int = 16
 
         /** @throws IllegalArgumentException if the style cannot be parsed. */
         @JvmStatic

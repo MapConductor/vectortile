@@ -240,7 +240,22 @@ fn draw_background(pixmap: &mut Pixmap, layer: &Layer, zoom: f64) {
     if color.a <= 0.0 {
         return;
     }
-    pixmap.fill(color.to_tiny_skia());
+    if color.a >= 1.0 {
+        pixmap.fill(color.to_tiny_skia());
+        return;
+    }
+    // Painted over what is already there rather than replacing it. A style may
+    // have more than one background layer -- the tessellator's copy of this
+    // says what real styles do with them -- and `fill` would drop whatever the
+    // ones below it put down.
+    let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
+    else {
+        return;
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(color.to_tiny_skia());
+    paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
 }
 
 fn draw_data_layer(
