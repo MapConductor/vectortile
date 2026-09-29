@@ -120,6 +120,12 @@ pub struct Renderer {
     /// every child of a magnified tile decodes the whole of its ancestor, and
     /// two levels down that is sixteen decodes of one tile.
     source_tiles: std::sync::RwLock<Vec<(LabelTileKey, std::sync::Arc<model::Tile>)>>,
+    /// Whole source tiles triangulated at a magnified scale, keyed by source
+    /// tile, output level and pixel size. A tile drawn two levels down from
+    /// its source shares that source with fifteen siblings; each used to
+    /// walk and triangulate the source again for its own sixteenth.
+    #[cfg(feature = "tessellate")]
+    tessellations: std::sync::RwLock<Vec<(TessellationKey, std::sync::Arc<tessellate::Tessellation>)>>,
     /// The style's sprite sheet, once the host has fetched it. One sheet
     /// covers the whole style, so unlike glyphs there is nothing to accumulate
     /// -- it is either loaded or it is not.
@@ -183,6 +189,16 @@ const LABEL_TILE_CACHE: usize = 48;
 /// working set is the handful of ancestors a screen magnifies from.
 const SOURCE_TILE_CACHE: usize = 8;
 
+/// Magnified triangulations kept. One per source tile per output level; a
+/// screen magnifying from a handful of ancestors needs that handful.
+#[cfg(feature = "tessellate")]
+const TESSELLATION_CACHE: usize = 12;
+
+/// (source, z, x, y) of the source tile, then the output level and pixel size
+/// the triangulation was made for. Scale follows from the two levels.
+#[cfg(feature = "tessellate")]
+type TessellationKey = (String, u8, u32, u32, u8, u32);
+
 /// Where a style's sprite sheet lives: an index and the image it indexes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpriteRequest {
@@ -197,6 +213,8 @@ impl Renderer {
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
             label_tiles: std::sync::RwLock::new(Vec::new()),
             source_tiles: std::sync::RwLock::new(Vec::new()),
+            #[cfg(feature = "tessellate")]
+            tessellations: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
             display_tile_size: DEFAULT_TILE_SIZE,
         })
@@ -208,6 +226,8 @@ impl Renderer {
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
             label_tiles: std::sync::RwLock::new(Vec::new()),
             source_tiles: std::sync::RwLock::new(Vec::new()),
+            #[cfg(feature = "tessellate")]
+            tessellations: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
             display_tile_size: DEFAULT_TILE_SIZE,
         }
@@ -219,12 +239,41 @@ impl Renderer {
     /// of 512 is what a raster source declared at 512 gets. See
     /// [`Renderer::display_tile_size`] for why it is not the pixel count.
     pub fn with_display_tile_size(mut self, dp: u32) -> Renderer {
-        self.display_tile_size = dp.max(1);
+        self.set_display_tile_size(dp);
         self
     }
 
     pub fn set_display_tile_size(&mut self, dp: u32) {
         self.display_tile_size = dp.max(1);
+        self.forget_tessellations();
+    }
+
+    /// Triangulations depend on the style and on the paint scale; both of
+    /// those changing means starting over.
+    fn forget_tessellations(&self) {
+        #[cfg(feature = "tessellate")]
+        if let Ok(mut cache) = self.tessellations.write() {
+            cache.clear();
+        }
+    }
+
+    #[cfg(feature = "tessellate")]
+    fn cached_tessellation(&self, key: &TessellationKey) -> Option<std::sync::Arc<tessellate::Tessellation>> {
+        let cache = self.tessellations.read().ok()?;
+        cache
+            .iter()
+            .find(|(cached, _)| cached == key)
+            .map(|(_, t)| t.clone())
+    }
+
+    #[cfg(feature = "tessellate")]
+    fn remember_tessellation(&self, key: TessellationKey, t: std::sync::Arc<tessellate::Tessellation>) {
+        let Ok(mut cache) = self.tessellations.write() else {
+            return;
+        };
+        cache.retain(|(cached, _)| cached != &key);
+        cache.insert(0, (key, t));
+        cache.truncate(TESSELLATION_CACHE);
     }
 
     /// dp of screen one tile covers. See the field for the two rules it sets.
@@ -383,6 +432,7 @@ impl Renderer {
     /// recolouring cheap — no refetch, just a re-rasterise.
     pub fn set_style(&mut self, style_json: &str) -> Result<(), RenderError> {
         self.style = Style::parse(style_json)?;
+        self.forget_tessellations();
         Ok(())
     }
 
@@ -466,6 +516,80 @@ impl Renderer {
         }
     }
 
+    /// Draws the whole source tile that `z/x/y` reads from, at the resolution
+    /// its children are drawn at, in one go.
+    ///
+    /// When a tile is magnified from a shallower level, every child of that
+    /// source repeats the same work: decode it (cached), walk its features
+    /// through the window, tessellate, rasterise its share. Sixteen children
+    /// of one source do that sixteen times for one tile's worth of data. This
+    /// draws it once, over a surface `2^offset` tiles across, which the host
+    /// can cut into the tiles the map asked for.
+    ///
+    /// Returns the pixmap and how many tiles it is across. When nothing is
+    /// magnified the block is one tile and this is the ordinary path.
+    #[doc(hidden)]
+    pub fn render_source_block(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_size: u32,
+        tile_data: &[Option<&[u8]>],
+    ) -> Result<(tiny_skia::Pixmap, u32), RenderError> {
+        let across = self.source_zoom_offset();
+        let block_z = z.saturating_sub(across);
+        let block_x = x >> across;
+        let block_y = y >> across;
+        let tiles_across = 1u32 << across;
+        let out_size = tile_size
+            .checked_mul(tiles_across)
+            .ok_or(RenderError::BadTileSize(tile_size))?;
+        if out_size == 0 || out_size > 8192 {
+            return Err(RenderError::BadTileSize(out_size));
+        }
+
+        // The block is its own source tile drawn whole, so no magnification --
+        // but the style is read at the *child's* zoom, which is what makes the
+        // pieces match the tiles they replace.
+        let plan = plan_tile_at(&self.style, block_z, block_x, block_y, self.style_zoom(z), 0);
+        let decoded = self.decode_plan(&plan, tile_data);
+        let store = self
+            .glyphs
+            .read()
+            .map_err(|_| RenderError::Decode("glyph store poisoned".into()))?;
+        let sprites = self
+            .sprites
+            .read()
+            .map_err(|_| RenderError::Decode("sprite sheet poisoned".into()))?;
+        let (pixmap, _) = raster::render_with_glyphs(
+            &self.style,
+            self.style_zoom(z),
+            out_size,
+            self.display_tile_size as f32 * tiles_across as f32,
+            &decoded,
+            &store,
+            sprites.as_ref(),
+            (block_x, block_y),
+        )
+        .ok_or(RenderError::BadTileSize(out_size))?;
+        Ok((pixmap, tiles_across))
+    }
+
+    /// The plan a block render needs: the source tile whole, not a quadrant.
+    #[doc(hidden)]
+    pub fn plan_source_block(&self, z: u8, x: u32, y: u32) -> TilePlan {
+        let across = self.source_zoom_offset();
+        plan_tile_at(
+            &self.style,
+            z.saturating_sub(across),
+            x >> across,
+            y >> across,
+            self.style_zoom(z),
+            0,
+        )
+    }
+
     /// Rasterises `z/x/y` and returns PNG bytes.
     ///
     /// `tile_data` is positional against `self.plan(z, x, y).requests`; entries
@@ -520,7 +644,8 @@ impl Renderer {
 
         let plan = self.plan(z, x, y);
         let decode_started = crate::clock::Stopwatch::start();
-        let mut decoded = Vec::with_capacity(plan.requests.len());
+        let mut decoded: Vec<(&SourceTileRequest, std::sync::Arc<model::Tile>)> =
+            Vec::with_capacity(plan.requests.len());
         for (request, data) in plan
             .requests
             .iter()
@@ -536,32 +661,47 @@ impl Renderer {
             if request.labels_only {
                 continue;
             }
-            let Ok(tile) = mvt::decode(bytes) else {
-                continue;
+            // Decoded once per source tile, not once per child of it: the
+            // same cache the CPU path reads.
+            let key = (request.source_id.clone(), request.z, request.x, request.y);
+            let tile = match self.cached_source_tile(&key) {
+                Some(tile) => tile,
+                None => {
+                    let Ok(tile) = mvt::decode(bytes) else {
+                        continue;
+                    };
+                    let tile = std::sync::Arc::new(tile);
+                    self.remember_source_tile(key, tile.clone());
+                    tile
+                }
             };
             decoded.push((request, tile));
         }
         let decode_ms = decode_started.ms();
 
-        let views: Vec<tessellate::DecodedTile<'_>> = decoded
-            .iter()
-            .map(|(request, tile)| tessellate::DecodedTile {
-                source_id: &request.source_id,
-                tile,
-                scale: request.scale,
-                offset_x: request.offset_x,
-                offset_y: request.offset_y,
-            })
-            .collect();
-
         let tessellate_started = crate::clock::Stopwatch::start();
-        let result = tessellate::tessellate(
-            &self.style,
-            self.style_zoom(z),
-            tile_size,
-            self.display_tile_size as f32,
-            &views,
-        );
+        let magnified = !decoded.is_empty() && decoded.iter().all(|(r, _)| r.scale > 1.0);
+        let result = if magnified {
+            self.tessellate_from_sources(z, tile_size, &decoded)
+        } else {
+            let views: Vec<tessellate::DecodedTile<'_>> = decoded
+                .iter()
+                .map(|(request, tile)| tessellate::DecodedTile {
+                    source_id: &request.source_id,
+                    tile,
+                    scale: request.scale,
+                    offset_x: request.offset_x,
+                    offset_y: request.offset_y,
+                })
+                .collect();
+            tessellate::tessellate(
+                &self.style,
+                self.style_zoom(z),
+                tile_size,
+                self.display_tile_size as f32,
+                &views,
+            )
+        };
         let tessellate_ms = tessellate_started.ms();
 
         let mut packed = Vec::with_capacity(13 + result.batches.len() * 2 + result.vertices.len());
@@ -584,6 +724,101 @@ impl Renderer {
         }
         packed.extend_from_slice(&result.vertices);
         Ok(packed)
+    }
+
+    /// A magnified tile cut out of whole-source-tile triangulations.
+    ///
+    /// Each source tile is triangulated once at this level's scale (offset
+    /// zero, no window) and kept in [`Renderer::tessellations`]; a child is
+    /// then that triangulation moved into place and clipped, which is a pass
+    /// over the vertices instead of over the features. Sources are merged in
+    /// style layer order, since a batch is one style layer and a style reads
+    /// each layer from exactly one source.
+    #[cfg(feature = "tessellate")]
+    fn tessellate_from_sources(
+        &self,
+        z: u8,
+        tile_size: u32,
+        decoded: &[(&SourceTileRequest, std::sync::Arc<model::Tile>)],
+    ) -> tessellate::Tessellation {
+        let zoom = self.style_zoom(z);
+        let mut parts: Vec<(tessellate::Tessellation, f32)> = Vec::with_capacity(decoded.len());
+        for (request, tile) in decoded {
+            let key = (request.source_id.clone(), request.z, request.x, request.y, z, tile_size);
+            let whole = match self.cached_tessellation(&key) {
+                Some(whole) => whole,
+                None => {
+                    let view = tessellate::DecodedTile {
+                        source_id: &request.source_id,
+                        tile,
+                        scale: request.scale,
+                        offset_x: 0.0,
+                        offset_y: 0.0,
+                    };
+                    let whole = std::sync::Arc::new(tessellate::tessellate_with(
+                        &self.style,
+                        zoom,
+                        tile_size,
+                        self.display_tile_size as f32,
+                        std::slice::from_ref(&view),
+                        false,
+                    ));
+                    self.remember_tessellation(key, whole.clone());
+                    whole
+                }
+            };
+            // The child's origin, in the whole tile's own extent: `project`
+            // subtracts `offset * extent` before scaling.
+            let whole_extent = whole.extent as f32;
+            let dx = -request.offset_x * whole_extent * request.scale;
+            let dy = -request.offset_y * whole_extent * request.scale;
+            parts.push((
+                tessellate::translated_clip(&whole, 1.0, dx, dy, whole_extent, whole_extent / 64.0),
+                request.scale,
+            ));
+        }
+        if parts.len() == 1 {
+            return parts.pop().map(|(t, _)| t).unwrap_or_default();
+        }
+        // Several sources: unify extents to the first one's and interleave the
+        // batches in style order.
+        let extent = parts.first().map(|(t, _)| t.extent).unwrap_or(4096).max(1);
+        let order: std::collections::HashMap<&str, usize> = self
+            .style
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(i, layer)| (layer.id.as_str(), i))
+            .collect();
+        let mut merged = tessellate::Tessellation {
+            extent,
+            background: parts.iter().find_map(|(t, _)| t.background),
+            ..Default::default()
+        };
+        let mut batches: Vec<(usize, usize, usize)> = Vec::new(); // (layer order, part, batch)
+        for (pi, (part, _)) in parts.iter().enumerate() {
+            for (bi, batch) in part.batches.iter().enumerate() {
+                batches.push((order.get(batch.layer_id.as_str()).copied().unwrap_or(usize::MAX), pi, bi));
+            }
+        }
+        batches.sort_by_key(|(o, pi, bi)| (*o, *pi, *bi));
+        for (_, pi, bi) in batches {
+            let (part, _) = &parts[pi];
+            let batch = &part.batches[bi];
+            let unify = extent as f32 / part.extent.max(1) as f32;
+            let first = batch.first_vertex as usize * tessellate::VERTEX_STRIDE;
+            let end = first + batch.vertex_count as usize * tessellate::VERTEX_STRIDE;
+            let start = merged.vertices.len();
+            for v in part.vertices[first..end].chunks_exact(tessellate::VERTEX_STRIDE) {
+                merged.vertices.extend_from_slice(&[v[0] * unify, v[1] * unify, v[2], v[3], v[4], v[5]]);
+            }
+            merged.batches.push(tessellate::Batch {
+                first_vertex: (start / tessellate::VERTEX_STRIDE) as u32,
+                vertex_count: batch.vertex_count,
+                layer_id: batch.layer_id.clone(),
+            });
+        }
+        merged
     }
 
     /// Same as [`Renderer::render`] but returns the pixmap, for callers that
@@ -1296,6 +1531,29 @@ mod tests {
     }
 
     #[test]
+    /// Four children of one source tile, drawn for a 256 dp host, triangulate
+    /// that source once and cut the rest.
+    #[cfg(feature = "tessellate")]
+    #[test]
+    fn magnified_children_share_one_triangulation() {
+        let renderer = Renderer::from_style(test_style()).with_display_tile_size(256);
+        let bytes = fixtures::sample_tile();
+        let mut lengths = Vec::new();
+        for (x, y) in [(0u32, 0u32), (1, 0), (0, 1), (1, 1)] {
+            let plan = renderer.plan(1, x, y);
+            let data: Vec<Option<&[u8]>> = plan
+                .requests
+                .iter()
+                .map(|r| if r.labels_only { None } else { Some(bytes.as_slice()) })
+                .collect();
+            let packed = renderer.tessellate_packed(1, x, y, 256, &data).expect("packed");
+            lengths.push(packed.len());
+        }
+        assert!(lengths.iter().all(|&n| n > 13), "children drew nothing: {lengths:?}");
+        let cached = renderer.tessellations.read().unwrap().len();
+        assert_eq!(cached, 1, "one source tile, one triangulation");
+    }
+
     fn set_style_recolors_without_new_tile_data() {
         let mut renderer = Renderer::from_style(test_style());
         let data = fixtures::sample_tile();

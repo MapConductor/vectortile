@@ -107,6 +107,23 @@ pub fn tessellate(
     display_tile_size: f32,
     decoded: &[DecodedTile<'_>],
 ) -> Tessellation {
+    tessellate_with(style, zoom, tile_size, display_tile_size, decoded, true)
+}
+
+/// [`tessellate`], with the overzoom window optional.
+///
+/// `windowed` is the ordinary case: a magnified tile only looks at the
+/// features that can land in it. Off, the whole source tile is triangulated
+/// at the magnified scale, which is what [`translated_clip`] cuts children
+/// out of -- one triangulation serving every child instead of one each.
+pub fn tessellate_with(
+    style: &Style,
+    zoom: f64,
+    tile_size: u32,
+    display_tile_size: f32,
+    decoded: &[DecodedTile<'_>],
+    windowed: bool,
+) -> Tessellation {
     let paint_scale = tile_size as f32 / display_tile_size.max(1.0);
     let mut out = Tessellation::default();
     // Which features of each data layer fall inside the overzoom window,
@@ -173,7 +190,7 @@ pub fn tessellate(
         // the cost of a street-zoom tile, spent on features that could not
         // possibly appear. The margin is generous (an eighth of the window)
         // so a wide road casing or a label anchor just outside still draws.
-        let window = if tile.scale > 1.0 {
+        let window = if windowed && tile.scale > 1.0 {
             let extent = data.extent as f32;
             let span = extent / tile.scale;
             let margin = span / 8.0;
@@ -369,6 +386,63 @@ pub fn tessellate(
 
     if out.extent == 0 {
         out.extent = 4096;
+    }
+    out
+}
+
+/// One child of a whole-source-tile triangulation.
+///
+/// Every vertex is taken into `extent` units (`unify`), moved by `dx`/`dy`,
+/// and a triangle is kept when its bounds touch the tile plus `margin`. The
+/// GPU clips exactly, so the margin only guards against float error at the
+/// edge; what matters is that no triangle crossing the tile is dropped.
+/// Batches keep their order and their layer, minus the ones left empty.
+pub fn translated_clip(
+    src: &Tessellation,
+    unify: f32,
+    dx: f32,
+    dy: f32,
+    extent: f32,
+    margin: f32,
+) -> Tessellation {
+    let (lo, hi) = (-margin, extent + margin);
+    let mut out = Tessellation {
+        vertices: Vec::with_capacity(src.vertices.len() / 4),
+        batches: Vec::with_capacity(src.batches.len()),
+        extent: extent as u32,
+        background: src.background,
+        stats: TessellationStats::default(),
+    };
+    const TRI: usize = VERTEX_STRIDE * 3;
+    for batch in &src.batches {
+        let start = out.vertices.len();
+        let first = batch.first_vertex as usize * VERTEX_STRIDE;
+        let end = first + batch.vertex_count as usize * VERTEX_STRIDE;
+        for tri in src.vertices[first..end].chunks_exact(TRI) {
+            let mut moved = [0f32; TRI];
+            moved.copy_from_slice(tri);
+            let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for v in moved.chunks_exact_mut(VERTEX_STRIDE) {
+                v[0] = v[0] * unify + dx;
+                v[1] = v[1] * unify + dy;
+                min_x = min_x.min(v[0]);
+                max_x = max_x.max(v[0]);
+                min_y = min_y.min(v[1]);
+                max_y = max_y.max(v[1]);
+            }
+            if max_x < lo || min_x > hi || max_y < lo || min_y > hi {
+                continue;
+            }
+            out.vertices.extend_from_slice(&moved);
+        }
+        let added = out.vertices.len() - start;
+        if added > 0 {
+            out.batches.push(Batch {
+                first_vertex: (start / VERTEX_STRIDE) as u32,
+                vertex_count: (added / VERTEX_STRIDE) as u32,
+                layer_id: batch.layer_id.clone(),
+            });
+        }
     }
     out
 }
@@ -884,6 +958,100 @@ mod tests {
                     min[axis],
                     max[axis]
                 );
+            }
+        }
+    }
+
+    /// Cutting children out of one whole-tile triangulation draws what
+    /// triangulating each child on its own draws: nothing a child shows is
+    /// missing, and nothing it does not show is there.
+    #[test]
+    fn children_cut_from_one_triangulation_match_their_own() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": { "src": { "type": "vector", "tiles": ["https://t/{z}/{x}/{y}.pbf"] } },
+            "layers": [
+                { "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
+                  "paint": { "fill-color": "#0000ff" } },
+                { "id": "l", "type": "line", "source": "src", "source-layer": "road",
+                  "paint": { "line-color": "#ff0000", "line-width": 3 } }
+            ]
+        }))
+        .unwrap();
+        let span = 4096.0f32;
+        // Polygons and roads spread over the parent, some crossing child
+        // boundaries, one far off in a corner.
+        let polys = vec![
+            vec![vec![[100.0, 100.0], [1500.0, 100.0], [1500.0, 1500.0], [100.0, 1500.0]]],
+            vec![vec![[1800.0, 1800.0], [3000.0, 1900.0], [2600.0, 3100.0], [1700.0, 2800.0]]],
+            vec![vec![[3900.0, 3900.0], [4090.0, 3900.0], [4090.0, 4090.0], [3900.0, 4090.0]]],
+        ];
+        let roads = vec![
+            vec![vec![[0.0, 2048.0], [span, 2100.0]]],
+            vec![vec![[300.0, 0.0], [700.0, 3000.0], [3500.0, 3500.0]]],
+        ];
+        let tile = model::Tile {
+            layers: vec![
+                model::Layer::from_tables(
+                    "poly".into(), 4096, vec![], vec![],
+                    polys.into_iter().enumerate().map(|(i, rings)| {
+                        model::Feature::new(Some(i as u64 + 1), GeomType::Polygon, rings, vec![])
+                    }).collect(),
+                ),
+                model::Layer::from_tables(
+                    "road".into(), 4096, vec![], vec![],
+                    roads.into_iter().enumerate().map(|(i, parts)| {
+                        model::Feature::new(Some(i as u64 + 1), GeomType::LineString, parts, vec![])
+                    }).collect(),
+                ),
+            ],
+        };
+        for scale in [2.0f32, 4.0] {
+            let whole = tessellate_with(
+                &style, 12.0, 512, 512.0,
+                &[DecodedTile { source_id: "src", tile: &tile, scale, offset_x: 0.0, offset_y: 0.0 }],
+                false,
+            );
+            let across = scale as u32;
+            for cy in 0..across {
+                for cx in 0..across {
+                    let (ox, oy) = (cx as f32 / scale, cy as f32 / scale);
+                    let direct = tessellate(
+                        &style, 12.0, 512, 512.0,
+                        &[DecodedTile { source_id: "src", tile: &tile, scale, offset_x: ox, offset_y: oy }],
+                    );
+                    let extent = direct.extent as f32;
+                    assert_eq!(whole.extent, direct.extent);
+                    let cut = translated_clip(
+                        &whole, 1.0, -ox * extent * scale, -oy * extent * scale, extent, extent / 64.0,
+                    );
+                    let tri = |t: &Tessellation| -> Vec<[f32; 6]> {
+                        t.vertices
+                            .chunks_exact(VERTEX_STRIDE * 3)
+                            .map(|v| [v[0], v[1], v[6], v[7], v[12], v[13]])
+                            .collect()
+                    };
+                    let (a, b) = (tri(&cut), tri(&direct));
+                    let same = |p: &[f32; 6], q: &[f32; 6]| p.iter().zip(q).all(|(x, y)| (x - y).abs() < 0.05);
+                    let touches = |p: &[f32; 6]| {
+                        let xs = [p[0], p[2], p[4]];
+                        let ys = [p[1], p[3], p[5]];
+                        let (lo, hi) = (0.0, extent);
+                        !(xs.iter().all(|&x| x < lo) || xs.iter().all(|&x| x > hi)
+                            || ys.iter().all(|&y| y < lo) || ys.iter().all(|&y| y > hi))
+                    };
+                    for p in &a {
+                        assert!(b.iter().any(|q| same(p, q)),
+                            "scale {scale} child {cx},{cy}: cut has a triangle its own triangulation lacks: {p:?}");
+                    }
+                    for q in b.iter().filter(|q| touches(q)) {
+                        assert!(a.iter().any(|p| same(p, q)),
+                            "scale {scale} child {cx},{cy}: a triangle on the tile is missing from the cut: {q:?}");
+                    }
+                    // Batches stay in style order.
+                    let ids: Vec<&str> = cut.batches.iter().map(|b| b.layer_id.as_str()).collect();
+                    assert!(ids == ["f", "l"] || ids == ["f"] || ids == ["l"] || ids.is_empty(), "{ids:?}");
+                }
             }
         }
     }
