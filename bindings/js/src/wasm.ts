@@ -75,6 +75,22 @@ export interface WasmRenderer {
         data: Uint8Array,
         lengths: Uint32Array,
     ): string;
+    /**
+     * Features in the tile as a JSON array of {sourceId, layer, id, geometry,
+     * lon, lat, bounds:[w,s,e,n], properties}. Empty strings mean "no
+     * restriction"; a filter that is not JSON throws.
+     */
+    queryFeatures(
+        z: number,
+        x: number,
+        y: number,
+        data: Uint8Array,
+        lengths: Uint32Array,
+        sourceLayer: string,
+        filterJson: string,
+        text: string,
+        limit: number,
+    ): string;
     addGlyphs(pbf: Uint8Array): number;
     hasGlyphs(): boolean;
     spriteUrls(pixelRatio: number): string;

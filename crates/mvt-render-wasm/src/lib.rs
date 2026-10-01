@@ -251,6 +251,47 @@ impl VectorTileRenderer {
         self.inner.glyphs_url_template().map(str::to_owned)
     }
 
+    /// Features in the tile as a JSON array; see `Renderer::query_features_json`.
+    /// Empty strings mean "no restriction". A filter that is not JSON errors.
+    #[wasm_bindgen(js_name = queryFeatures)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_features(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        data: &[u8],
+        lengths: &[u32],
+        source_layer: &str,
+        filter_json: &str,
+        text: &str,
+        limit: u32,
+    ) -> Result<String, JsError> {
+        let slices = unpack(data, lengths)?;
+        let none_if_empty = |s: &str| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_owned())
+            }
+        };
+        let source_layer = none_if_empty(source_layer);
+        let filter_json = none_if_empty(filter_json);
+        let text = none_if_empty(text);
+        self.inner
+            .query_features_json(
+                z,
+                x,
+                y,
+                &slices,
+                source_layer.as_deref(),
+                filter_json.as_deref(),
+                text.as_deref(),
+                limit as usize,
+            )
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// URLs of the glyph ranges this tile's labels need and the store has not
     /// got, as a JSON array of strings.
     ///

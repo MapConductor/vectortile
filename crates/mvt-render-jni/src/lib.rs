@@ -343,6 +343,99 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeGly
 /// URLs rather than parts: the host has nothing to do with the pair except
 /// fetch it, and building the string here keeps one copy of the substitution
 /// rules instead of one per platform.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeQueryFeatures(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+    source_layer: JString,
+    filter_json: JString,
+    text: JString,
+    limit: jint,
+) -> jstring {
+    // Features in the tile as JSON; see `Renderer::query_features_json`.
+    // Null strings mean "no restriction". A filter that is not JSON throws.
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        let data_bytes = match env.convert_byte_array(&data) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad tile data: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let count = match env.get_array_length(&lengths) {
+            Ok(value) => value as usize,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let mut length_table = vec![0i32; count];
+        if let Err(error) = env.get_int_array_region(&lengths, 0, &mut length_table) {
+            throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+            return std::ptr::null_mut();
+        }
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(count);
+        let mut offset = 0usize;
+        for length in &length_table {
+            if *length <= 0 {
+                slices.push(None);
+                continue;
+            }
+            let length = *length as usize;
+            if offset + length > data_bytes.len() {
+                slices.push(None);
+                continue;
+            }
+            slices.push(Some(&data_bytes[offset..offset + length]));
+            offset += length;
+        }
+        let source_layer = optional_string(env, &source_layer);
+        let filter_json = optional_string(env, &filter_json);
+        let text = optional_string(env, &text);
+        let json = match renderer.query_features_json(
+            z as u8,
+            x as u32,
+            y as u32,
+            &slices,
+            source_layer.as_deref(),
+            filter_json.as_deref(),
+            text.as_deref(),
+            limit.max(0) as usize,
+        ) {
+            Ok(json) => json,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("{error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        match env.new_string(json) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// A possibly-null Java string.
+fn optional_string(env: &mut JNIEnv, value: &JString) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    env.get_string(value).ok().map(|s| s.into())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNeededGlyphs(
     mut env: JNIEnv,
     _class: JClass,

@@ -493,6 +493,68 @@ pub unsafe extern "C" fn mvt_renderer_needed_glyphs(
     }
 }
 
+/// Features in `z/x/y` as a JSON array (see `Renderer::query_features_json`).
+///
+/// `source_layer`, `filter_json` and `text` may be null. Returns null when the
+/// handle is null, the tiles do not unpack, or the filter is not JSON.
+///
+/// # Safety
+/// `handle` must be live; `data`/`lengths` valid for their lengths; the
+/// strings NUL-terminated or null.
+#[no_mangle]
+pub unsafe extern "C" fn mvt_renderer_query_features(
+    handle: *mut MvtRenderer,
+    z: u8,
+    x: u32,
+    y: u32,
+    data: *const u8,
+    data_len: usize,
+    lengths: *const u32,
+    lengths_len: usize,
+    source_layer: *const c_char,
+    filter_json: *const c_char,
+    text: *const c_char,
+    limit: u32,
+) -> *mut c_char {
+    if handle.is_null() {
+        return ptr::null_mut();
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Ok(slices) = unpack_tiles(data, data_len, lengths, lengths_len) else {
+            return None;
+        };
+        let source_layer = optional_str(source_layer);
+        let filter_json = optional_str(filter_json);
+        let text = optional_str(text);
+        (*handle)
+            .inner
+            .query_features_json(
+                z,
+                x,
+                y,
+                &slices,
+                source_layer,
+                filter_json,
+                text,
+                limit as usize,
+            )
+            .ok()
+    }));
+    match result {
+        Ok(Some(json)) => into_c_string(json),
+        _ => ptr::null_mut(),
+    }
+}
+
+/// A nullable C string as an `Option<&str>`; invalid UTF-8 counts as absent.
+unsafe fn optional_str<'a>(text: *const c_char) -> Option<&'a str> {
+    if text.is_null() {
+        None
+    } else {
+        CStr::from_ptr(text).to_str().ok()
+    }
+}
+
 /// Adds one glyph range PBF. Returns how many glyphs it carried, or a negative
 /// error code.
 ///

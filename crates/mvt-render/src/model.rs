@@ -105,6 +105,11 @@ impl Feature {
         self.props.len() / 2
     }
 
+    /// `[min_x, min_y, max_x, max_y]` in the tile's own units.
+    pub fn bounds(&self) -> [f32; 4] {
+        self.bbox
+    }
+
     /// The feature's (name index, value index) pairs, in storage order.
     pub fn prop_pairs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.props.chunks_exact(2).map(|pair| (pair[0], pair[1]))

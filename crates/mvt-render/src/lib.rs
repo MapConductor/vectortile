@@ -43,6 +43,7 @@ pub mod glyphs;
 pub mod mercator;
 pub mod model;
 pub mod mvt;
+pub mod query;
 pub mod raster;
 pub mod sprite;
 pub mod style;
@@ -56,6 +57,7 @@ pub mod tile;
 pub mod fixtures;
 
 pub use color::Color;
+pub use query::{FeatureHit, FeatureQuery};
 pub use raster::{DecodedTile, RenderStats};
 pub use style::{Layer, LayerKind, Source, Style, StyleError};
 pub use tile::{plan_tile, plan_tile_at, SourceTileRequest, TilePlan};
@@ -125,7 +127,8 @@ pub struct Renderer {
     /// its source shares that source with fifteen siblings; each used to
     /// walk and triangulate the source again for its own sixteenth.
     #[cfg(feature = "tessellate")]
-    tessellations: std::sync::RwLock<Vec<(TessellationKey, std::sync::Arc<tessellate::Tessellation>)>>,
+    tessellations:
+        std::sync::RwLock<Vec<(TessellationKey, std::sync::Arc<tessellate::Tessellation>)>>,
     /// The style's sprite sheet, once the host has fetched it. One sheet
     /// covers the whole style, so unlike glyphs there is nothing to accumulate
     /// -- it is either loaded or it is not.
@@ -258,7 +261,10 @@ impl Renderer {
     }
 
     #[cfg(feature = "tessellate")]
-    fn cached_tessellation(&self, key: &TessellationKey) -> Option<std::sync::Arc<tessellate::Tessellation>> {
+    fn cached_tessellation(
+        &self,
+        key: &TessellationKey,
+    ) -> Option<std::sync::Arc<tessellate::Tessellation>> {
         let cache = self.tessellations.read().ok()?;
         cache
             .iter()
@@ -267,7 +273,11 @@ impl Renderer {
     }
 
     #[cfg(feature = "tessellate")]
-    fn remember_tessellation(&self, key: TessellationKey, t: std::sync::Arc<tessellate::Tessellation>) {
+    fn remember_tessellation(
+        &self,
+        key: TessellationKey,
+        t: std::sync::Arc<tessellate::Tessellation>,
+    ) {
         let Ok(mut cache) = self.tessellations.write() else {
             return;
         };
@@ -552,7 +562,14 @@ impl Renderer {
         // The block is its own source tile drawn whole, so no magnification --
         // but the style is read at the *child's* zoom, which is what makes the
         // pieces match the tiles they replace.
-        let plan = plan_tile_at(&self.style, block_z, block_x, block_y, self.style_zoom(z), 0);
+        let plan = plan_tile_at(
+            &self.style,
+            block_z,
+            block_x,
+            block_y,
+            self.style_zoom(z),
+            0,
+        );
         let decoded = self.decode_plan(&plan, tile_data);
         let store = self
             .glyphs
@@ -744,7 +761,14 @@ impl Renderer {
         let zoom = self.style_zoom(z);
         let mut parts: Vec<(tessellate::Tessellation, f32)> = Vec::with_capacity(decoded.len());
         for (request, tile) in decoded {
-            let key = (request.source_id.clone(), request.z, request.x, request.y, z, tile_size);
+            let key = (
+                request.source_id.clone(),
+                request.z,
+                request.x,
+                request.y,
+                z,
+                tile_size,
+            );
             let whole = match self.cached_tessellation(&key) {
                 Some(whole) => whole,
                 None => {
@@ -798,7 +822,14 @@ impl Renderer {
         let mut batches: Vec<(usize, usize, usize)> = Vec::new(); // (layer order, part, batch)
         for (pi, (part, _)) in parts.iter().enumerate() {
             for (bi, batch) in part.batches.iter().enumerate() {
-                batches.push((order.get(batch.layer_id.as_str()).copied().unwrap_or(usize::MAX), pi, bi));
+                batches.push((
+                    order
+                        .get(batch.layer_id.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                    pi,
+                    bi,
+                ));
             }
         }
         batches.sort_by_key(|(o, pi, bi)| (*o, *pi, *bi));
@@ -810,7 +841,14 @@ impl Renderer {
             let end = first + batch.vertex_count as usize * tessellate::VERTEX_STRIDE;
             let start = merged.vertices.len();
             for v in part.vertices[first..end].chunks_exact(tessellate::VERTEX_STRIDE) {
-                merged.vertices.extend_from_slice(&[v[0] * unify, v[1] * unify, v[2], v[3], v[4], v[5]]);
+                merged.vertices.extend_from_slice(&[
+                    v[0] * unify,
+                    v[1] * unify,
+                    v[2],
+                    v[3],
+                    v[4],
+                    v[5],
+                ]);
             }
             merged.batches.push(tessellate::Batch {
                 first_vertex: (start / tessellate::VERTEX_STRIDE) as u32,
@@ -1193,6 +1231,118 @@ impl Renderer {
         Ok((png, placed))
     }
 
+    /// The features in `z/x/y` that a query asks for.
+    ///
+    /// Tiles are passed as for [`Self::render`]. Only the tile's own
+    /// requests are read -- the neighbours fetched for label placement lie
+    /// outside the tile and are their own tiles' to report -- and a
+    /// magnified ancestor reports only the quadrant this tile shows.
+    ///
+    /// `filter_json` is a MapLibre filter expression; a string that will not
+    /// parse is an error rather than a silent match-all, because a search
+    /// that quietly returns everything looks exactly like one that worked.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_features(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_data: &[Option<&[u8]>],
+        source_layer: Option<&str>,
+        filter_json: Option<&str>,
+        text: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<query::FeatureHit>, RenderError> {
+        let filter = match filter_json {
+            Some(text) if !text.trim().is_empty() => Some(
+                serde_json::from_str::<serde_json::Value>(text)
+                    .map_err(|e| RenderError::Decode(format!("filter: {e}")))?,
+            ),
+            _ => None,
+        };
+        let query = query::FeatureQuery {
+            source_layer: source_layer.map(str::to_owned),
+            filter,
+            text: text.filter(|t| !t.is_empty()).map(str::to_owned),
+            limit,
+        };
+        let plan = self.plan(z, x, y);
+        let mut hits = Vec::new();
+        for (request, data) in plan
+            .requests
+            .iter()
+            .zip(tile_data.iter().chain(std::iter::repeat(&None)))
+        {
+            if request.labels_only {
+                continue;
+            }
+            let Some(bytes) = data else { continue };
+            if bytes.is_empty() {
+                continue;
+            }
+            let key = (request.source_id.clone(), request.z, request.x, request.y);
+            let tile = match self.cached_source_tile(&key) {
+                Some(tile) => tile,
+                None => {
+                    let Ok(tile) = mvt::decode(bytes) else {
+                        continue;
+                    };
+                    let tile = std::sync::Arc::new(tile);
+                    self.remember_source_tile(key, tile.clone());
+                    tile
+                }
+            };
+            for layer in &tile.layers {
+                let extent = layer.extent as f32;
+                // The part of the source tile this target tile shows.
+                let span = extent / request.scale;
+                let window = [
+                    request.offset_x * extent,
+                    request.offset_y * extent,
+                    request.offset_x * extent + span,
+                    request.offset_y * extent + span,
+                ];
+                let frame = query::TileFrame {
+                    z: request.z,
+                    x: request.x,
+                    y: request.y,
+                    extent: layer.extent,
+                };
+                query::find_in_layer(
+                    &request.source_id,
+                    layer,
+                    frame,
+                    window,
+                    &query,
+                    plan.zoom,
+                    &mut hits,
+                );
+                if query.limit > 0 && hits.len() >= query.limit {
+                    return Ok(hits);
+                }
+            }
+        }
+        Ok(hits)
+    }
+
+    /// [`Self::query_features`] as the JSON the bindings hand across.
+    #[allow(clippy::too_many_arguments)]
+    pub fn query_features_json(
+        &self,
+        z: u8,
+        x: u32,
+        y: u32,
+        tile_data: &[Option<&[u8]>],
+        source_layer: Option<&str>,
+        filter_json: Option<&str>,
+        text: Option<&str>,
+        limit: usize,
+    ) -> Result<String, RenderError> {
+        let hits =
+            self.query_features(z, x, y, tile_data, source_layer, filter_json, text, limit)?;
+        Ok(query::hits_to_json(&hits))
+    }
+
     /// Decodes whatever arrived for a plan, in the plan's own order.
     fn decode_plan(&self, plan: &TilePlan, tile_data: &[Option<&[u8]>]) -> Vec<DecodedTile> {
         self.decode_plan_inner(plan, tile_data, false)
@@ -1366,13 +1516,27 @@ mod tests {
         }"#;
         let at512 = Renderer::new(style).expect("style");
         assert_eq!(at512.source_zoom_offset(), 0);
-        let urls: Vec<_> = at512.plan(7, 113, 50).requests.iter().map(|r| r.url.clone()).collect();
-        assert!(urls[0].contains("/7/113/50"), "512 dp draws its own level: {urls:?}");
+        let urls: Vec<_> = at512
+            .plan(7, 113, 50)
+            .requests
+            .iter()
+            .map(|r| r.url.clone())
+            .collect();
+        assert!(
+            urls[0].contains("/7/113/50"),
+            "512 dp draws its own level: {urls:?}"
+        );
 
-        let at256 = Renderer::new(style).expect("style").with_display_tile_size(256);
+        let at256 = Renderer::new(style)
+            .expect("style")
+            .with_display_tile_size(256);
         assert_eq!(at256.source_zoom_offset(), 1);
         let request = &at256.plan(7, 113, 50).requests[0];
-        assert!(request.url.contains("/6/56/25"), "256 dp draws the parent: {}", request.url);
+        assert!(
+            request.url.contains("/6/56/25"),
+            "256 dp draws the parent: {}",
+            request.url
+        );
         // Magnified, and placed in the quadrant the tile came from.
         assert_eq!(request.scale, 2.0);
         assert_eq!(request.offset_x, 0.5);
@@ -1544,12 +1708,23 @@ mod tests {
             let data: Vec<Option<&[u8]>> = plan
                 .requests
                 .iter()
-                .map(|r| if r.labels_only { None } else { Some(bytes.as_slice()) })
+                .map(|r| {
+                    if r.labels_only {
+                        None
+                    } else {
+                        Some(bytes.as_slice())
+                    }
+                })
                 .collect();
-            let packed = renderer.tessellate_packed(1, x, y, 256, &data).expect("packed");
+            let packed = renderer
+                .tessellate_packed(1, x, y, 256, &data)
+                .expect("packed");
             lengths.push(packed.len());
         }
-        assert!(lengths.iter().all(|&n| n > 13), "children drew nothing: {lengths:?}");
+        assert!(
+            lengths.iter().all(|&n| n > 13),
+            "children drew nothing: {lengths:?}"
+        );
         let cached = renderer.tessellations.read().unwrap().len();
         assert_eq!(cached, 1, "one source tile, one triangulation");
     }
@@ -1643,7 +1818,14 @@ mod tests {
             labels_only: false,
         }];
 
-        let (pixmap, stats) = raster::render(&test_style(), 10.0, 512, raster::REFERENCE_TILE_SIZE, &decoded).expect("render");
+        let (pixmap, stats) = raster::render(
+            &test_style(),
+            10.0,
+            512,
+            raster::REFERENCE_TILE_SIZE,
+            &decoded,
+        )
+        .expect("render");
         assert_eq!(stats.features_drawn, 1);
 
         let (r, g, b, _) = pixel(&pixmap, 100, 100);
@@ -2134,6 +2316,100 @@ mod tests {
         let renderer = Renderer::from_style(test_style());
         assert!(renderer.render(10, 0, 0, 0, &[]).is_err());
         assert!(renderer.render(10, 0, 0, 100_000, &[]).is_err());
+    }
+
+    /// The tile fixture has one cafe at (3072, 1024) of 4096: three quarters
+    /// east, a quarter down. Searching for it must find it, place it there,
+    /// and report its properties; searching for something else must not.
+    #[test]
+    fn finds_features_by_text_layer_and_filter() {
+        let renderer = Renderer::from_style(test_style());
+        let tile = crate::fixtures::sample_tile();
+        let tiles: Vec<Option<&[u8]>> = vec![Some(&tile)];
+
+        let hits = renderer
+            .query_features(0, 0, 0, &tiles, None, None, Some("CAFE"), 0)
+            .expect("query");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        let cafe = &hits[0];
+        assert_eq!(cafe.layer, "poi");
+        assert_eq!(cafe.geom_type, model::GeomType::Point);
+        assert_eq!(
+            cafe.properties,
+            vec![("class".to_string(), model::Value::String("cafe".into()))]
+        );
+        // Three quarters of the way east across the world, a quarter down.
+        assert!((cafe.lon - 90.0).abs() < 1e-6, "lon {}", cafe.lon);
+        assert!(cafe.lat > 60.0 && cafe.lat < 70.0, "lat {}", cafe.lat);
+
+        // By layer alone.
+        let roads = renderer
+            .query_features(0, 0, 0, &tiles, Some("roads"), None, None, 0)
+            .expect("query");
+        assert_eq!(roads.len(), 2);
+        assert!(roads
+            .iter()
+            .all(|h| h.geom_type == model::GeomType::LineString));
+
+        // By filter expression.
+        let motorway = renderer
+            .query_features(
+                0,
+                0,
+                0,
+                &tiles,
+                None,
+                Some(r#"["==", ["get", "class"], "motorway"]"#),
+                None,
+                0,
+            )
+            .expect("query");
+        assert_eq!(motorway.len(), 1);
+        assert_eq!(motorway[0].layer, "roads");
+
+        // No such thing.
+        let none = renderer
+            .query_features(0, 0, 0, &tiles, None, None, Some("bakery"), 0)
+            .expect("query");
+        assert!(none.is_empty());
+
+        // A filter that is not JSON is an error, not everything.
+        assert!(renderer
+            .query_features(0, 0, 0, &tiles, None, Some("not json"), None, 0)
+            .is_err());
+
+        // And as JSON for the bindings.
+        let json = renderer
+            .query_features_json(0, 0, 0, &tiles, Some("poi"), None, None, 0)
+            .expect("json");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parses");
+        assert_eq!(parsed[0]["layer"], "poi");
+        assert_eq!(parsed[0]["properties"]["class"], "cafe");
+        assert_eq!(parsed[0]["geometry"], "Point");
+    }
+
+    /// A magnified ancestor reports only the quadrant the child shows.
+    #[test]
+    fn magnified_tiles_report_their_own_quadrant() {
+        let renderer = Renderer::from_style(test_style());
+        let tile = crate::fixtures::sample_tile();
+        // z15 is past the source's maxzoom 14, so every z15 tile reads a z14
+        // tile. Take the four children of z14 0/0 -- wait, the plan carries
+        // the offsets; the cafe at (0.75, 0.25) of the ancestor sits in the
+        // north-east child.
+        let ne = renderer.plan(15, 1, 0);
+        assert!(ne.requests[0].scale > 1.0);
+        let tiles: Vec<Option<&[u8]>> = ne.requests.iter().map(|_| Some(tile.as_slice())).collect();
+        let hits = renderer
+            .query_features(15, 1, 0, &tiles, Some("poi"), None, None, 0)
+            .expect("query");
+        assert_eq!(hits.len(), 1, "north-east child holds the cafe");
+        let sw = renderer.plan(15, 0, 1);
+        let tiles: Vec<Option<&[u8]>> = sw.requests.iter().map(|_| Some(tile.as_slice())).collect();
+        let hits = renderer
+            .query_features(15, 0, 1, &tiles, Some("poi"), None, None, 0)
+            .expect("query");
+        assert!(hits.is_empty(), "south-west child does not: {hits:?}");
     }
 
     #[test]
