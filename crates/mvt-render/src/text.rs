@@ -349,6 +349,40 @@ pub fn bounds(shaped: &Shaped, paint: &TextPaint, anchor: Anchor, at: (f32, f32)
     [left, top, left + w, top + h]
 }
 
+/// Covers the rasterized glyphs as well as the layout box. Font bearings and
+/// SDF borders can extend beyond the nominal line height; using only that
+/// height can discard a neighbour's visible half at a tile boundary.
+pub fn ink_bounds(
+    shaped: &Shaped,
+    store: &GlyphStore,
+    fonts: &[String],
+    paint: &TextPaint,
+    anchor: Anchor,
+    at: (f32, f32),
+) -> [f32; 4] {
+    let mut result = bounds(shaped, paint, anchor, at);
+    let origin = (result[0], result[1]);
+    let scale = paint.size / GLYPH_SIZE;
+    let buffer = crate::glyphs::BUFFER as f32;
+    for placed in &shaped.glyphs {
+        let Some(glyph) = store.glyph(fonts, placed.code) else {
+            continue;
+        };
+        if glyph.bitmap.is_empty() {
+            continue;
+        }
+        let x = pixel_origin(origin.0 + (placed.x + glyph.left as f32 - buffer) * scale) as f32;
+        let y = pixel_origin(origin.1 + (placed.y - glyph.top as f32 - buffer) * scale) as f32;
+        let width = ((glyph.width as f32 + 2.0 * buffer) * scale).ceil() + 1.0;
+        let height = ((glyph.height as f32 + 2.0 * buffer) * scale).ceil() + 1.0;
+        result[0] = result[0].min(x);
+        result[1] = result[1].min(y);
+        result[2] = result[2].max(x + width);
+        result[3] = result[3].max(y + height);
+    }
+    result
+}
+
 /// Draws a shaped label at `at`, in target pixels.
 ///
 /// The halo goes down first and the fill over it, so the fill's own edge is
@@ -548,6 +582,13 @@ fn build_mask(glyph: &Glyph, scale: f32, threshold: f32, gamma: f32) -> Mask {
     }
 }
 
+// Neighbouring tiles translate a glyph by an integer tile width. Ties must
+// round in the same direction on both sides of zero; f32::round moves
+// +0.5 to +1 but -0.5 to -1, shifting the two halves at the seam.
+fn pixel_origin(value: f32) -> i32 {
+    (value as f64 + 0.5).floor() as i32
+}
+
 /// As [`blit`], but through the store's mask cache when the glyph is drawn
 /// unrotated -- which is every glyph of every point label.
 ///
@@ -596,8 +637,8 @@ fn blit_cached(
     // glyph under half a pixel -- a quarter of a style pixel on the doubled
     // overlay.
     let buffer = crate::glyphs::BUFFER as f32;
-    let x0 = (ink.origin.0 + (placed.x + glyph.left as f32 - buffer) * ink.scale).round() as i32;
-    let y0 = (ink.origin.1 + (placed.y - glyph.top as f32 - buffer) * ink.scale).round() as i32;
+    let x0 = pixel_origin(ink.origin.0 + (placed.x + glyph.left as f32 - buffer) * ink.scale);
+    let y0 = pixel_origin(ink.origin.1 + (placed.y - glyph.top as f32 - buffer) * ink.scale);
     let pix_w = pixmap.width() as i32;
     let pix_h = pixmap.height() as i32;
     let base_alpha = ink.opacity * ink.color.a;
@@ -785,6 +826,18 @@ mod tests {
     use super::*;
     use crate::glyphs::BUFFER;
 
+    #[test]
+    fn glyph_pixel_origin_is_invariant_across_tile_boundaries() {
+        for tile_size in [256, 512, 1024] {
+            for position in [-0.5, 0.5, 15.5, 255.5, 511.5, 1023.5] {
+                assert_eq!(
+                    pixel_origin(position),
+                    pixel_origin(position - tile_size as f32) + tile_size,
+                );
+            }
+        }
+    }
+
     /// A glyph whose field is a real signed distance to a solid rectangle of
     /// ink, not a binary mask.
     ///
@@ -953,6 +1006,110 @@ mod tests {
         assert!(centre[0] < top_left[0] && centre[1] < top_left[1]);
         assert_eq!(top_left[0], 100.0);
         assert_eq!(top_left[1], 100.0);
+    }
+
+    #[test]
+    fn adjacent_tiles_draw_the_same_glyph_pixels_as_one_image() {
+        let (store, fonts) = store_with(vec![solid(65, 12, 12, 14)]);
+        let shaped = shape("A", &fonts, &store, 100.0);
+        let paint = TextPaint {
+            size: 24.0,
+            color: Color::new(0.0, 0.0, 0.0, 1.0),
+            halo_color: Color::new(1.0, 1.0, 1.0, 1.0),
+            halo_width: 2.0,
+            halo_blur: 0.0,
+            opacity: 1.0,
+        };
+        let mut full = Pixmap::new(64, 64).unwrap();
+        draw(
+            &mut full,
+            &shaped,
+            &store,
+            &fonts,
+            &paint,
+            Anchor::TopLeft,
+            (28.5, 28.5),
+        );
+        // Both axes cross a seam. Fractional origins test tie rounding for
+        // negative neighbour coordinates as well as positive local ones.
+        for ty in 0..2 {
+            for tx in 0..2 {
+                let mut tile = Pixmap::new(32, 32).unwrap();
+                draw(
+                    &mut tile,
+                    &shaped,
+                    &store,
+                    &fonts,
+                    &paint,
+                    Anchor::TopLeft,
+                    (28.5 - tx as f32 * 32.0, 28.5 - ty as f32 * 32.0),
+                );
+                for y in 0..32 {
+                    for x in 0..32 {
+                        let local = ((y * 32 + x) * 4) as usize;
+                        let global = (((y + ty * 32) * 64 + x + tx * 32) * 4) as usize;
+                        assert_eq!(
+                            &tile.data()[local..local + 4],
+                            &full.data()[global..global + 4]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ink_bounds_keep_glyphs_whose_layout_box_is_above_the_tile() {
+        let mut glyph = solid(65, 12, 12, 14);
+        glyph.top = 0;
+        let (store, fonts) = store_with(vec![glyph]);
+        let shaped = shape("A", &fonts, &store, 100.0);
+        let paint = TextPaint {
+            size: 24.0,
+            color: Color::new(0.0, 0.0, 0.0, 1.0),
+            halo_color: Color::new(1.0, 1.0, 1.0, 1.0),
+            halo_width: 2.0,
+            halo_blur: 1.0,
+            opacity: 1.0,
+        };
+        let at = (32.0, -20.0);
+        assert!(bounds(&shaped, &paint, Anchor::Center, at)[3] < 0.0);
+        let ink = ink_bounds(&shaped, &store, &fonts, &paint, Anchor::Center, at);
+        assert!(crate::symbol::touches_tile(ink, 64));
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        draw(
+            &mut pixmap,
+            &shaped,
+            &store,
+            &fonts,
+            &paint,
+            Anchor::Center,
+            at,
+        );
+        let mut painted = 0;
+        for y in 0..64 {
+            for x in 0..64 {
+                if pixmap.data()[((y * 64 + x) * 4 + 3) as usize] != 0 {
+                    painted += 1;
+                    assert!(x as f32 >= ink[0] && (x as f32) < ink[2]);
+                    assert!(y as f32 >= ink[1] && (y as f32) < ink[3]);
+                }
+            }
+        }
+        assert!(
+            painted > 0,
+            "the nominally invisible label actually reaches into the tile"
+        );
+        let translated = ink_bounds(
+            &shaped,
+            &store,
+            &fonts,
+            &paint,
+            Anchor::Center,
+            (at.0, at.1 + 64.0),
+        );
+        assert_eq!(ink[1] + 64.0, translated[1]);
+        assert_eq!(ink[3] + 64.0, translated[3]);
     }
 
     #[test]

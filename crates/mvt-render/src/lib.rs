@@ -35,6 +35,7 @@
 //! draws at all: raster, hillshade, fill-extrusion.
 
 mod clock;
+mod decode_cache;
 pub mod color;
 pub mod dash;
 pub mod expr;
@@ -117,11 +118,11 @@ pub struct Renderer {
     glyphs: std::sync::RwLock<text::GlyphStore>,
     /// Neighbouring tiles decoded for their labels, kept so the ring around a
     /// tile is decoded once between the nine tiles that want it.
-    label_tiles: std::sync::RwLock<Vec<(LabelTileKey, std::sync::Arc<model::Tile>)>>,
+    label_tiles: decode_cache::DecodeCache,
     /// Source tiles decoded in full, kept for the same reason one level up:
     /// every child of a magnified tile decodes the whole of its ancestor, and
     /// two levels down that is sixteen decodes of one tile.
-    source_tiles: std::sync::RwLock<Vec<(LabelTileKey, std::sync::Arc<model::Tile>)>>,
+    source_tiles: decode_cache::DecodeCache,
     /// Whole source tiles triangulated at a magnified scale, keyed by source
     /// tile, output level and pixel size. A tile drawn two levels down from
     /// its source shares that source with fifteen siblings; each used to
@@ -214,8 +215,8 @@ impl Renderer {
         Ok(Renderer {
             style: Style::parse(style_json)?,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
-            label_tiles: std::sync::RwLock::new(Vec::new()),
-            source_tiles: std::sync::RwLock::new(Vec::new()),
+            label_tiles: decode_cache::DecodeCache::new(LABEL_TILE_CACHE),
+            source_tiles: decode_cache::DecodeCache::new(SOURCE_TILE_CACHE),
             #[cfg(feature = "tessellate")]
             tessellations: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
@@ -227,8 +228,8 @@ impl Renderer {
         Renderer {
             style,
             glyphs: std::sync::RwLock::new(text::GlyphStore::new()),
-            label_tiles: std::sync::RwLock::new(Vec::new()),
-            source_tiles: std::sync::RwLock::new(Vec::new()),
+            label_tiles: decode_cache::DecodeCache::new(LABEL_TILE_CACHE),
+            source_tiles: decode_cache::DecodeCache::new(SOURCE_TILE_CACHE),
             #[cfg(feature = "tessellate")]
             tessellations: std::sync::RwLock::new(Vec::new()),
             sprites: std::sync::RwLock::new(None),
@@ -681,16 +682,8 @@ impl Renderer {
             // Decoded once per source tile, not once per child of it: the
             // same cache the CPU path reads.
             let key = (request.source_id.clone(), request.z, request.x, request.y);
-            let tile = match self.cached_source_tile(&key) {
-                Some(tile) => tile,
-                None => {
-                    let Ok(tile) = mvt::decode(bytes) else {
-                        continue;
-                    };
-                    let tile = std::sync::Arc::new(tile);
-                    self.remember_source_tile(key, tile.clone());
-                    tile
-                }
+            let Some(tile) = self.source_tiles.get_or_decode(key, || mvt::decode(bytes).ok()) else {
+                continue;
             };
             decoded.push((request, tile));
         }
@@ -979,40 +972,6 @@ impl Renderer {
             .collect()
     }
 
-    fn cached_label_tile(&self, key: &LabelTileKey) -> Option<std::sync::Arc<model::Tile>> {
-        let cache = self.label_tiles.read().ok()?;
-        cache
-            .iter()
-            .find(|(cached, _)| cached == key)
-            .map(|(_, tile)| tile.clone())
-    }
-
-    fn remember_label_tile(&self, key: LabelTileKey, tile: std::sync::Arc<model::Tile>) {
-        let Ok(mut cache) = self.label_tiles.write() else {
-            return;
-        };
-        cache.retain(|(cached, _)| cached != &key);
-        cache.insert(0, (key, tile));
-        cache.truncate(LABEL_TILE_CACHE);
-    }
-
-    fn cached_source_tile(&self, key: &LabelTileKey) -> Option<std::sync::Arc<model::Tile>> {
-        let cache = self.source_tiles.read().ok()?;
-        cache
-            .iter()
-            .find(|(cached, _)| cached == key)
-            .map(|(_, tile)| tile.clone())
-    }
-
-    fn remember_source_tile(&self, key: LabelTileKey, tile: std::sync::Arc<model::Tile>) {
-        let Ok(mut cache) = self.source_tiles.write() else {
-            return;
-        };
-        cache.retain(|(cached, _)| cached != &key);
-        cache.insert(0, (key, tile));
-        cache.truncate(SOURCE_TILE_CACHE);
-    }
-
     /// Every label this tile places, with what it says and where it lands.
     /// For working out why one is missing.
     #[doc(hidden)]
@@ -1281,16 +1240,8 @@ impl Renderer {
                 continue;
             }
             let key = (request.source_id.clone(), request.z, request.x, request.y);
-            let tile = match self.cached_source_tile(&key) {
-                Some(tile) => tile,
-                None => {
-                    let Ok(tile) = mvt::decode(bytes) else {
-                        continue;
-                    };
-                    let tile = std::sync::Arc::new(tile);
-                    self.remember_source_tile(key, tile.clone());
-                    tile
-                }
+            let Some(tile) = self.source_tiles.get_or_decode(key, || mvt::decode(bytes).ok()) else {
+                continue;
             };
             for layer in &tile.layers {
                 let extent = layer.extent as f32;
@@ -1386,21 +1337,16 @@ impl Renderer {
             // skip it and draw whatever else arrived.
             let tile = if request.labels_only || labels_only_everywhere {
                 let key = (request.source_id.clone(), request.z, request.x, request.y);
-                match self.cached_label_tile(&key) {
-                    Some(tile) => tile,
-                    None => {
-                        let wanted = symbol_layers
-                            .get(&request.source_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        let Ok(tile) = mvt::decode_only(bytes, &wanted) else {
-                            continue;
-                        };
-                        let tile = std::sync::Arc::new(tile);
-                        self.remember_label_tile(key, tile.clone());
-                        tile
-                    }
-                }
+                let Some(tile) = self.label_tiles.get_or_decode(key, || {
+                    let wanted = symbol_layers
+                        .get(&request.source_id)
+                        .cloned()
+                        .unwrap_or_default();
+                    mvt::decode_only(bytes, &wanted).ok()
+                }) else {
+                    continue;
+                };
+                tile
             } else {
                 // Cached like the label decode above, and for the same reason
                 // magnified: every child of a source tile decodes the whole of
@@ -1409,17 +1355,10 @@ impl Renderer {
                 // ArcGIS's 3D view asks for around 120 tiles to fill an iPad,
                 // and they come from a handful of ancestors.
                 let key = (request.source_id.clone(), request.z, request.x, request.y);
-                match self.cached_source_tile(&key) {
-                    Some(tile) => tile,
-                    None => {
-                        let Ok(tile) = mvt::decode(bytes) else {
-                            continue;
-                        };
-                        let tile = std::sync::Arc::new(tile);
-                        self.remember_source_tile(key, tile.clone());
-                        tile
-                    }
-                }
+                let Some(tile) = self.source_tiles.get_or_decode(key, || mvt::decode(bytes).ok()) else {
+                    continue;
+                };
+                tile
             };
             decoded.push(DecodedTile {
                 source_id: request.source_id.clone(),

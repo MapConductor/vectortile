@@ -433,7 +433,7 @@ pub fn collect(
                         opacity,
                     };
 
-                    let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
+                    let layout_text_bounds = if shaped.is_empty() || opacity <= 0.0 {
                         None
                     } else {
                         match &curve {
@@ -444,7 +444,15 @@ pub fn collect(
 
                     // After the text, because `icon-text-fit` sizes the icon around
                     // it: a shield is only as wide as the number it carries.
-                    let icon = icon_placement(layer, &ctx, sprites, paint_scale, spot, text_bounds);
+                    let icon =
+                        icon_placement(layer, &ctx, sprites, paint_scale, spot, layout_text_bounds);
+                    let text_bounds = layout_text_bounds.map(|nominal| {
+                        if curve.is_some() {
+                            nominal
+                        } else {
+                            text::ink_bounds(&shaped, store, &fonts, &paint, anchor, at)
+                        }
+                    });
 
                     // A symbol with neither its glyphs nor its icon yet is not a
                     // label; it would reserve space for nothing and push its
@@ -1520,13 +1528,20 @@ mod tests {
     fn a_rival_outside_the_tile_still_counts() {
         // 高円寺 as the east tile sees it: entirely west of x = 0.
         let kouenji = [-40.0, 142.0, -8.0, 155.0];
-        assert!(!touches_tile(kouenji, 256), "it does not reach into the tile");
+        assert!(
+            !touches_tile(kouenji, 256),
+            "it does not reach into the tile"
+        );
         assert!(
             touches_tile_within(kouenji, 256, 256.0),
             "but it is within a tile of it, so it must still be judged"
         );
         // Two tiles away it cannot overlap anything that touches this tile.
-        assert!(!touches_tile_within([-600.0, 0.0, -560.0, 20.0], 256, 256.0));
+        assert!(!touches_tile_within(
+            [-600.0, 0.0, -560.0, 20.0],
+            256,
+            256.0
+        ));
     }
 
     fn places_in_the_order_the_style_asked_for() {
@@ -1641,7 +1656,11 @@ mod tests {
             &store,
             None,
         );
-        assert_eq!(carried.len(), 1, "a rival within a tile must still be judged");
+        assert_eq!(
+            carried.len(),
+            1,
+            "a rival within a tile must still be judged"
+        );
         assert!(
             !touches_tile(carried[0].bounds, 512),
             "but it draws nothing here, got {:?}",
