@@ -342,6 +342,9 @@ impl Renderer {
 
     /// Whether this tile has to be rasterised on the CPU.
     ///
+    /// Complex visible polygons use the scanline rasteriser to avoid expensive
+    /// GPU triangulation. Small tiles skip the geometry decode for this check.
+    ///
     /// The GPU path draws flat-coloured triangles, and a patterned fill needs
     /// an image repeated across the polygon, so a tile that has one is drawn
     /// the slower way rather than drawn wrong.
@@ -352,14 +355,14 @@ impl Renderer {
     /// minzoom on any of them, so every tile at every zoom would have taken
     /// the slow path for three layers that appear on almost none of them.
     ///
-    /// The test is whether the tile carries the layer at all, and it is made
+    /// The pattern test is whether the tile carries the layer at all, and it is made
     /// by looking for the layer's name in the undecoded bytes -- a name that
     /// happens to appear as a property value costs that one tile the slower
     /// path, which is a better trade than decoding every tile twice to find
     /// out.
     pub fn needs_cpu(&self, z: u8, tile_data: &[Option<&[u8]>]) -> bool {
         let zoom = self.style_zoom(z);
-        self.style
+        let patterned = self.style
             .layers
             .iter()
             .filter(|layer| {
@@ -376,7 +379,42 @@ impl Renderer {
                     .iter()
                     .flatten()
                     .any(|bytes| contains(bytes, name.as_bytes()))
-            })
+            });
+        if patterned {
+            return true;
+        }
+
+        // Earcut's hole joining can take seconds for large forest polygons.
+        // The scanline rasteriser handles the same geometry without that
+        // triangulation. Ordinary tiles keep the GPU path; decode only inputs
+        // big enough to contain a polygon over the vertex budget.
+        const MAX_GPU_POLYGON_VERTICES: usize = 16_384;
+        let fills: Vec<_> = self.style.layers.iter().filter(|layer| {
+            layer.kind == LayerKind::Fill && layer.is_visible() && layer.applies_at(zoom)
+        }).collect();
+        if fills.is_empty() {
+            return false;
+        }
+        for bytes in tile_data.iter().flatten() {
+            if bytes.len() < MAX_GPU_POLYGON_VERTICES * 2 {
+                continue;
+            }
+            let Ok(tile) = mvt::decode(bytes) else { continue };
+            for layer in &fills {
+                let Some(data) = layer.source_layer.as_deref().and_then(|name| tile.layer(name)) else {
+                    continue;
+                };
+                let filter = filter::CompiledFilter::compile(layer.filter.as_ref(), data, zoom);
+                if data.features.iter().any(|feature| {
+                    feature.geom_type == model::GeomType::Polygon
+                        && feature.parts.iter().map(Vec::len).sum::<usize>() > MAX_GPU_POLYGON_VERTICES
+                        && filter.matches(data, feature)
+                }) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn has_sprite(&self) -> bool {
@@ -1880,6 +1918,34 @@ mod tests {
             !renderer.needs_cpu(13, &[Some(&without)]),
             "no such layer in this tile, so no reason to be slow"
         );
+    }
+
+    #[test]
+    fn complex_visible_polygons_use_the_scanline_renderer() {
+        let points: Vec<_> = (0..16_385).map(|i| {
+            let angle = i as f64 * std::f64::consts::TAU / 16_385.0;
+            ((angle.cos() * 1_000_000.0) as i32, (angle.sin() * 1_000_000.0) as i32)
+        }).collect();
+        let bytes = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "land".into(), extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Polygon, points,
+                props: vec![("kind".into(), "forest".into())],
+            }],
+        }]);
+        let style = Style::from_json(&serde_json::json!({"version":8,
+            "sources":{"src":{"type":"vector","tiles":["https://t/{z}/{x}/{y}.pbf"]}},
+            "layers":[{"id":"forest","type":"fill","source":"src","source-layer":"land",
+                "minzoom":12,"filter":["==","kind","forest"],"paint":{"fill-color":"#00ff00"}}]})).unwrap();
+        let renderer = Renderer::from_style(style.clone());
+        assert!(renderer.needs_cpu(13, &[Some(&bytes)]));
+        assert!(!renderer.needs_cpu(10, &[Some(&bytes)]), "not visible at this zoom");
+        let mut hidden = style.clone();
+        hidden.layers[0].layout.insert("visibility".into(), serde_json::json!("none"));
+        assert!(!Renderer::from_style(hidden).needs_cpu(13, &[Some(&bytes)]));
+        let mut unmatched = style;
+        unmatched.layers[0].filter = Some(serde_json::json!(["==","kind","water"]));
+        assert!(!Renderer::from_style(unmatched).needs_cpu(13, &[Some(&bytes)]), "unmatched geometry must not force CPU");
     }
 
     /// A patterned fill draws the sheet's icon rather than the flat colour

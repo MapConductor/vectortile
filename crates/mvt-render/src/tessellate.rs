@@ -126,6 +126,15 @@ pub fn tessellate_with(
 ) -> Tessellation {
     let paint_scale = tile_size as f32 / display_tile_size.max(1.0);
     let mut out = Tessellation::default();
+    let last_background = style.layers.iter().rposition(|layer| {
+        layer.kind == LayerKind::Background
+            && layer.is_visible()
+            && layer.applies_at(zoom)
+            && layer
+                .paint_color("background-color", &Ctx::zoom_only(zoom), Color::BLACK)
+                .with_opacity(layer.paint_number("background-opacity", &Ctx::zoom_only(zoom), 1.0) as f32)
+                .a > 0.0
+    });
     // Which features of each data layer fall inside the overzoom window,
     // worked out once per data layer rather than once per style layer. A
     // style reads one source layer through dozens of its own layers, and
@@ -134,7 +143,7 @@ pub fn tessellate_with(
     let mut in_window: std::collections::HashMap<usize, std::rc::Rc<Vec<u32>>> =
         std::collections::HashMap::new();
 
-    for layer in &style.layers {
+    for (layer_index, layer) in style.layers.iter().enumerate() {
         if !layer.kind.is_drawable() || !layer.is_visible() || !layer.applies_at(zoom) {
             continue;
         }
@@ -322,6 +331,22 @@ pub fn tessellate_with(
             if color.a <= 0.0 {
                 // Invisible for this feature; with constant paint that means
                 // the whole layer.
+                if !varies {
+                    break;
+                }
+                continue;
+            }
+
+            // Before any geometry changes the uniform opaque background,
+            // painting the same opaque colour cannot change a pixel. Roads
+            // recolours large forest polygons black on black; triangulating
+            // their thousands of holes otherwise occupies a phone for tens
+            // of seconds. Keep later covering shapes and translucent paint.
+            if out.vertices.is_empty()
+                && color.a == 1.0
+                && out.background == Some(color)
+                && last_background.map_or(true, |last| layer_index > last)
+            {
                 if !varies {
                     break;
                 }
@@ -761,6 +786,36 @@ mod tests {
             offset_x: 0.0,
             offset_y: 0.0,
         }]
+    }
+
+    #[test]
+    fn opaque_paint_matching_an_unchanged_background_needs_no_triangles() {
+        let tile = tile_with("poly", GeomType::Polygon, vec![vec![
+            [0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [0.0, 1000.0],
+        ]]);
+        let background = json!({"id":"bg", "type":"background", "paint":{"background-color":"#000000"}});
+        let fill = json!({"id":"fill", "type":"fill", "source":"src", "source-layer":"poly", "paint":{"fill-color":"#000000"}});
+        let different = json!({"id":"red", "type":"fill", "source":"src", "source-layer":"poly", "paint":{"fill-color":"#ff0000"}});
+        let later_background = json!({"id":"later-bg", "type":"background", "paint":{"background-color":"#0000ff"}});
+        let transparent_slot = json!({"id":"slot", "type":"background", "paint":{"background-color":"#ff0000", "background-opacity":0}});
+        for (layers, triangles) in [
+            (vec![background.clone(), fill.clone()], 0),
+            (vec![background.clone(), different, fill.clone()], 4),
+            (vec![fill.clone()], 2),
+            (vec![background.clone(), fill.clone(), later_background], 2),
+            (vec![background.clone(), fill.clone(), transparent_slot], 0),
+        ] {
+            let style = Style::from_json(&json!({"version":8,
+                "sources":{"src":{"type":"vector","tiles":["https://t/{z}/{x}/{y}.pbf"]}},
+                "layers":layers})).unwrap();
+            let result = tessellate(&style, 10.0, 512, 512.0, &decoded(&tile));
+            assert_eq!(result.triangle_count(), triangles, "{}", serde_json::to_string(&layers).unwrap());
+        }
+        let translucent = Style::from_json(&json!({"version":8,
+            "sources":{"src":{"type":"vector","tiles":["https://t/{z}/{x}/{y}.pbf"]}},
+            "layers":[background, {"id":"fill","type":"fill","source":"src","source-layer":"poly",
+                "paint":{"fill-color":"#000000","fill-opacity":0.5}}]})).unwrap();
+        assert_eq!(tessellate(&translucent, 10.0, 512, 512.0, &decoded(&tile)).triangle_count(), 2);
     }
 
     #[test]

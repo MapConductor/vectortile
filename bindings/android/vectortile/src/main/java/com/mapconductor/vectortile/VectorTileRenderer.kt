@@ -61,7 +61,7 @@ class VectorTileRenderer private constructor(
          * 16: magnified geometry lands inside its tile on the GPU path.
          * 17: labels judged against a tile of margin, so neighbours agree.
          */
-        const val OUTPUT_VERSION: Int = 17
+        const val OUTPUT_VERSION: Int = 23
 
         /** @throws IllegalArgumentException if the style cannot be parsed. */
         @JvmStatic
@@ -171,6 +171,7 @@ class VectorTileRenderer private constructor(
     /**
      * Whether a tile at this zoom has to be rasterised on the CPU.
      *
+     * Complex visible polygons use the CPU to avoid expensive triangulation.
      * The GPU path draws flat-coloured triangles; a patterned fill needs an
      * image repeated across the polygon. Asked of the tile rather than of the
      * style, because a style that paints prisons with a hatch says nothing
