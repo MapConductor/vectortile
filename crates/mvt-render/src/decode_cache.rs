@@ -5,22 +5,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 type Flight = Arc<OnceLock<Option<Arc<Tile>>>>;
 
-#[derive(Default)]
 struct State {
-    entries: Vec<(LabelTileKey, Arc<Tile>)>,
+    entries: crate::memory_cache::MemoryCache<LabelTileKey, Arc<Tile>>,
     flights: HashMap<LabelTileKey, Flight>,
 }
 
 pub(crate) struct DecodeCache {
-    limit: usize,
     state: Mutex<State>,
 }
 
 impl DecodeCache {
     pub(crate) fn new(limit: usize) -> Self {
         Self {
-            limit,
-            state: Mutex::new(State::default()),
+            state: Mutex::new(State {
+                entries: crate::memory_cache::MemoryCache::new(limit, 16 << 20),
+                flights: HashMap::new(),
+            }),
         }
     }
 
@@ -31,12 +31,20 @@ impl DecodeCache {
     ) -> Option<Arc<Tile>> {
         let flight = {
             let mut state = self.state.lock().ok()?;
-            if let Some((_, tile)) = state.entries.iter().find(|(stored, _)| stored == &key) {
-                return Some(tile.clone());
+            if let Some(tile) = state.entries.get(&key) {
+                return Some(tile);
             }
             state.flights.entry(key.clone()).or_default().clone()
         };
         // Decode outside the cache lock: different tiles must remain parallel.
+        //
+        // `decode` must not panic. A panic here poisons the `OnceLock`, and
+        // the flight is never taken out of the map -- so every later request
+        // for that key panics too, and so does every thread already waiting
+        // on this one. The decoders this is called with
+        // (`mvt::decode`/`decode_only`) are written to return `Err` on
+        // anything malformed, which is what makes that safe; a decoder that
+        // can abort on bad input needs catching before it gets here.
         let tile = flight.get_or_init(|| decode().map(Arc::new)).clone();
         let mut state = self.state.lock().ok()?;
         // Only the thread still owning this flight publishes/removes it.
@@ -48,8 +56,8 @@ impl DecodeCache {
         {
             state.flights.remove(&key);
             if let Some(tile) = &tile {
-                state.entries.insert(0, (key, tile.clone()));
-                state.entries.truncate(self.limit);
+                let cost = tile.memory_cost() + key.0.capacity();
+                state.entries.insert(key, tile.clone(), cost);
             }
         }
         tile
@@ -129,13 +137,34 @@ mod tests {
     }
 
     #[test]
+    fn dense_decodes_over_budget_are_served_but_not_retained() {
+        let cache = DecodeCache::new(48);
+        let calls = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let decoded = cache.get_or_decode(key(1), || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let geometry = Vec::<[f32; 2]>::with_capacity((16 << 20) / 8 + 1);
+                let feature = crate::model::Feature::new(
+                    None, crate::model::GeomType::Polygon, vec![geometry], vec![],
+                );
+                Some(Tile { layers: vec![crate::model::Layer::from_tables(
+                    "dense".into(), 4096, vec![], vec![], vec![feature],
+                )] })
+            });
+            assert!(decoded.is_some());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(cache.state.lock().unwrap().entries.len(), 0);
+    }
+
+    #[test]
     fn decoded_cache_stays_bounded() {
         let cache = DecodeCache::new(2);
         for x in 0..3 {
             cache.get_or_decode(key(x), || Some(tile()));
         }
-        let state = cache.state.lock().unwrap();
+        let mut state = cache.state.lock().unwrap();
         assert_eq!(state.entries.len(), 2);
-        assert!(!state.entries.iter().any(|(k, _)| *k == key(0)));
+        assert!(state.entries.get(&key(0)).is_none());
     }
 }

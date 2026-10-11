@@ -1,0 +1,43 @@
+{
+  "affects": "both",
+  "patchable": true,
+  "diagnostics": [
+    "schema: unrecognised (8 layers)",
+    "rule 1 matched 8 layers",
+    "rule 2 matched 2 layers",
+    "rule 3 matched no layer; nothing will change for it",
+    "rule 4 matched no layer; nothing will change for it",
+    "roles found: label=2 background=1 boundary=1"
+  ],
+  "addedLayers": [],
+  "changedLayers": {
+    "background": [
+      "setPaint background-color=\"#000000\""
+    ],
+    "coastline": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "countries-boundary": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "countries-fill": [
+      "setPaint fill-color=\"#000000\""
+    ],
+    "countries-label": [
+      "setLayout visibility=\"none\"",
+      "setPaint text-color=\"#000000\"",
+      "setPaint icon-color=\"#000000\""
+    ],
+    "crimea-fill": [
+      "setPaint fill-color=\"#000000\""
+    ],
+    "geolines": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "geolines-label": [
+      "setLayout visibility=\"none\"",
+      "setPaint text-color=\"#000000\"",
+      "setPaint icon-color=\"#000000\""
+    ]
+  }
+}

@@ -250,9 +250,12 @@ export class VectorTileProvider implements TileProvider {
             type: 'init',
             styleText,
             tileSize,
+            displayTileSize: options.displayTileSize,
             cacheBytes: options.cacheBytes ?? 16 * 1024 * 1024,
             headers: options.headers,
             wasmUrl: options.wasmUrl ? String(options.wasmUrl) : undefined,
+            persistRenderedTiles: options.persistRenderedTiles,
+            persistSourceTiles: options.persistSourceTiles,
         });
 
         for (const warning of warnings) options.onWarning?.(warning);

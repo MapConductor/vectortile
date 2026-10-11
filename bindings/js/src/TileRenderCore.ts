@@ -1,5 +1,6 @@
 import { loadWasm, type WasmRenderer } from './wasm';
-import { TileCache } from './TileCache';
+import { TileCache, sourceFetchStats, type SourceFetchStats } from './TileCache';
+import { SourceTileCache } from './SourceTileCache';
 import { RenderedTileCache, digest } from './RenderedTileCache';
 
 export interface TileRequest {
@@ -11,7 +12,28 @@ export interface TileRequest {
 export interface TileRenderCoreOptions {
     /** A `style.json` URL, its raw text, or the parsed object. */
     style: string | object;
+    /**
+     * How many pixels a rendered tile has on each edge. Defaults to 512.
+     *
+     * On a screen with more device pixels than CSS pixels this is the larger
+     * number: the map is handed a sharper image for the same ground. What
+     * that ground is stays {@link displayTileSize}'s job.
+     */
     tileSize?: number;
+    /**
+     * The CSS px one tile covers on screen, when that is not the same as
+     * {@link tileSize}.
+     *
+     * Style dimensions are screen units, so the rasteriser needs both: the
+     * pixel count to fill, and the width those pixels are shown at. They are
+     * the same number on a 1x screen and differ by the device pixel ratio on
+     * a Retina one -- and getting it wrong is not subtle. Declare 1024 pixels
+     * without saying they cover 512 CSS px and every label and road comes out
+     * half size, with the style read one zoom too deep.
+     *
+     * Defaults to {@link tileSize}, which is exactly today's behaviour.
+     */
+    displayTileSize?: number;
     /** Source tile cache budget in bytes. Defaults to 16 MB. */
     cacheBytes?: number;
     /**
@@ -20,6 +42,15 @@ export interface TileRenderCoreOptions {
      * their back is not a favour.
      */
     persistRenderedTiles?: boolean;
+    /**
+     * Keep fetched source tiles in Cache Storage so reloads and remounts do
+     * not pay the network round trip again. Off by default, for the same
+     * reason as {@link persistRenderedTiles}.
+     *
+     * Worth having on top of that one: a restyle discards every rendered tile
+     * and keeps every source tile, so a recolour costs no network at all.
+     */
+    persistSourceTiles?: boolean;
     wasmUrl?: string | URL;
     /**
      * Headers sent with every source tile request — auth tokens, API keys.
@@ -30,7 +61,7 @@ export interface TileRenderCoreOptions {
      * Full control over source tile fetching. Not cloneable, so supplying this
      * forces main-thread rendering; use `headers` if that is all you need.
      */
-    fetchTile?: (url: string) => Promise<Uint8Array | null>;
+    fetchTile?: (url: string, signal?: AbortSignal) => Promise<Uint8Array | null>;
     onWarning?: (message: string) => void;
 }
 
@@ -48,12 +79,50 @@ interface PlanEntry {
     labelsOnly?: boolean;
 }
 
+/**
+ * Whether the host asked for the per-tile log, read fresh each time.
+ *
+ * Off, every call has to cost nothing: these fire per tile per content half,
+ * so the message itself is built behind a closure rather than passed in.
+ * Reading the flag is wrapped because `localStorage` throws outright in a
+ * private window.
+ */
+function debugging(): boolean {
+    try {
+        const global = globalThis as { MAPCONDUCTOR_DEBUG_LOG?: string; localStorage?: Storage };
+        return (
+            global.MAPCONDUCTOR_DEBUG_LOG === '1' ||
+            global.localStorage?.getItem('MAPCONDUCTOR_DEBUG_LOG') === '1'
+        );
+    } catch {
+        return false;
+    }
+}
+
+function debug(message: () => string): void {
+    if (!debugging()) return;
+    try {
+        console.debug(`[MapConductor][VectorTile] ${message()}`);
+    } catch {
+        // A log must never be the thing that loses a tile.
+    }
+}
+
+function describe(stats: SourceFetchStats): string {
+    return (
+        `mvt(mem=${stats.memoryHits} disk=${stats.diskHits} net=${stats.networkFetches} ` +
+        `shared=${stats.sharedWaits} cancel=${stats.cancelled})`
+    );
+}
+
 function makeFetcher(
     headers?: Record<string, string>,
-): (url: string) => Promise<Uint8Array | null> {
+): (url: string, signal?: AbortSignal) => Promise<Uint8Array | null> {
     const init = headers && Object.keys(headers).length > 0 ? { headers } : undefined;
-    return async (url) => {
-        const response = await fetch(url, init);
+    return async (url, signal) => {
+        // The signal is what lets a pan abandon the tiles it no longer wants
+        // before they reach the renderer.
+        const response = await fetch(url, init ? { ...init, signal } : { signal });
         // A missing tile is normal at the edge of a source's coverage.
         if (response.status === 404 || response.status === 204) return null;
         if (!response.ok) throw new Error(`tile fetch failed: ${response.status} ${url}`);
@@ -92,7 +161,7 @@ export type TileContent =
 
 export class TileRenderCore {
     private readonly cache: TileCache;
-    private readonly fetchTile: (url: string) => Promise<Uint8Array | null>;
+    private readonly fetchTile: (url: string, signal?: AbortSignal) => Promise<Uint8Array | null>;
     private disposed = false;
 
     /** Glyph ranges somebody has already claimed, so two tiles do not both
@@ -129,7 +198,7 @@ export class TileRenderCore {
      * says*, not by *what the renderer did with it*. Kept in step with the
      * Android and iOS bindings: they cache the output of the same core.
      */
-    static readonly outputVersion = 17;
+    static readonly outputVersion = 22;
 
     /**
      * Told when glyphs arrive and the tiles already on screen are missing
@@ -163,10 +232,14 @@ export class TileRenderCore {
         // label pass draws at twice the pixels). It sets the size the style
         // draws at and the zoom its expressions are read at.
         const tileSize = options.tileSize ?? 512;
-        const renderer = new wasm.VectorTileRenderer(styleText, tileSize);
+        const renderer = new wasm.VectorTileRenderer(
+            styleText,
+            options.displayTileSize ?? tileSize,
+        );
         const core = new TileRenderCore(renderer, tileSize, options);
         core.styleKey = digest(styleText);
         if (options.persistRenderedTiles) core.rendered = await RenderedTileCache.open();
+        if (options.persistSourceTiles) core.cache.persistent = await SourceTileCache.open();
         // Undrawn layer types are reported by the caller via
         // `unsupportedLayerTypes()`, not warned about here — otherwise the
         // worker path would surface the same message twice.
@@ -250,21 +323,38 @@ export class TileRenderCore {
     private async packTiles(
         request: TileRequest,
         content: TileContent = 'full',
+        signal?: AbortSignal,
+        stats?: SourceFetchStats,
     ): Promise<{ data: Uint8Array; lengths: Uint32Array } | null> {
         if (this.disposed) return null;
         const { z, x, y } = request;
 
         const plan = JSON.parse(this.renderer.plan(z, x, y)) as PlanEntry[];
-        const fetched = await Promise.all(
-            plan.map((entry) =>
+        const fetched: (Uint8Array | null)[] = new Array(plan.length).fill(null);
+        // The tile's own data is asked for before the ring of neighbours it
+        // only needs to judge labels against. Both sets are wanted, but a
+        // browser gives a handful of connections per origin, and with the
+        // plan's own order the neighbours of the first tile queue ahead of the
+        // second tile's own data -- so the screen fills a tile at a time
+        // instead of all at once. The result array keeps the plan's order
+        // regardless; the wasm side reads it positionally.
+        const ordered = plan
+            .map((entry, index) => ({ entry, index }))
+            .sort(
+                (a, b) =>
+                    (a.entry.labelsOnly ? plan.length : 0) +
+                    a.index -
+                    ((b.entry.labelsOnly ? plan.length : 0) + b.index),
+            );
+        await Promise.all(
+            ordered.map(async ({ entry, index }) => {
                 // The ground never draws a label, so the ring of neighbours the
                 // label pass asks for is nine fetches it has no use for. The
                 // entry stays in place -- the wasm side reads the plan
                 // positionally -- but holds nothing.
-                content === 'ground' && entry.labelsOnly
-                    ? Promise.resolve(null)
-                    : this.cache.get(entry.url, this.fetchTile),
-            ),
+                if (content === 'ground' && entry.labelsOnly) return;
+                fetched[index] = await this.cache.get(entry.url, this.fetchTile, signal, stats);
+            }),
         );
         if (this.disposed) return null;
 
@@ -336,8 +426,14 @@ export class TileRenderCore {
             }
         }
 
-        const packed = await this.packTiles(request, content);
-        if (!packed || signal?.aborted) return null;
+        const stats = sourceFetchStats();
+        const fetchStarted = performance.now();
+        const packed = await this.packTiles(request, content, signal, stats);
+        const fetchMs = Math.round(performance.now() - fetchStarted);
+        if (!packed || signal?.aborted) {
+            debug(() => `tile ${z}/${x}/${y} ${content} cancelled after ${fetchMs}ms ${describe(stats)}`);
+            return null;
+        }
 
         // The ground has no labels, so it has no glyphs to be short of.
         let short = false;
@@ -349,6 +445,7 @@ export class TileRenderCore {
         // be interrupted, and it is the part that takes the time.
         if (this.disposed || signal?.aborted) return null;
 
+        const renderStarted = performance.now();
         let png: Uint8Array | null;
         if (content === 'labels') {
             const resolution = this.tileSize * TileRenderCore.labelResolution;
@@ -382,6 +479,12 @@ export class TileRenderCore {
 
         const store = short ? provisionalKey : completeKey;
         if (png && store) void this.rendered?.put(store, png);
+        debug(
+            () =>
+                `tile ${z}/${x}/${y} ${content} fetch=${fetchMs}ms ` +
+                `render=${Math.round(performance.now() - renderStarted)}ms ` +
+                `bytes=${png?.byteLength ?? 0} ${describe(stats)}`,
+        );
         return png;
     }
 

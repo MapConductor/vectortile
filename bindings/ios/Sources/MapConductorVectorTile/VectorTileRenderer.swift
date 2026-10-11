@@ -44,52 +44,6 @@ private func withTiles<R>(
     }
 }
 
-/// A feature found by ``VectorTileRenderer/queryFeatures(z:x:y:tiles:sourceLayer:filter:text:limit:)``.
-public struct VectorFeature: Decodable, Equatable {
-    public enum Geometry: String, Decodable { case point = "Point", lineString = "LineString", polygon = "Polygon", unknown = "Unknown" }
-
-    public let sourceId: String
-    /// The source-layer the feature is in.
-    public let layer: String
-    public let id: UInt64?
-    public let geometry: Geometry
-    /// A point to hang the feature on: the point itself, the middle vertex of
-    /// a line, the centre of a polygon's box.
-    public let lon: Double
-    public let lat: Double
-    /// West, south, east, north.
-    public let bounds: [Double]
-    public let properties: [String: PropertyValue]
-
-    /// A property value as the tile stored it.
-    public enum PropertyValue: Decodable, Equatable {
-        case string(String)
-        case number(Double)
-        case bool(Bool)
-        case null
-
-        public init(from decoder: Decoder) throws {
-            let container = try decoder.singleValueContainer()
-            if container.decodeNil() { self = .null }
-            else if let b = try? container.decode(Bool.self) { self = .bool(b) }
-            else if let d = try? container.decode(Double.self) { self = .number(d) }
-            else { self = .string(try container.decode(String.self)) }
-        }
-
-        public var stringValue: String? { if case .string(let s) = self { return s } else { return nil } }
-        public var doubleValue: Double? { if case .number(let d) = self { return d } else { return nil } }
-    }
-
-    /// The `name` property, the thing most searches show.
-    public var name: String? { properties["name"]?.stringValue }
-}
-
-private func withOptionalCString<R>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
-    guard let value else { return body(nil) }
-    return value.withCString { body($0) }
-}
-
-/// Decodes one of the JSON arrays the native side answers with, and frees it.
 private func takeStrings(_ json: UnsafeMutablePointer<CChar>?) -> [String] {
     guard let json else { return [] }
     defer { mvt_string_free(json) }
@@ -131,8 +85,14 @@ public final class VectorTileRenderer {
 
      Kept in step with the Android binding's `OUTPUT_VERSION`: they cache the
      output of the same native renderer.
+
+     18: glyph pixels align across tile boundaries.
+     19: label bounds include glyph bearings and SDF raster extents.
+     20: that extent decides which tile a label draws in; collisions are
+         judged on the layout box again, so labels are as dense as before.
+     24: Google's finer target grids retain the parent style zoom and paint sizes.
      */
-    public static let outputVersion = 23
+    public static let outputVersion = 24
 
     private var handle: OpaquePointer?
 
@@ -199,17 +159,19 @@ public final class VectorTileRenderer {
     }
 
     /// Runs one native call with the renderer held alive for its duration.
-    private func withRenderer<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
+    private func withRenderer<T>(sourceZoomOffset: Int = 0, _ body: (OpaquePointer) throws -> T) throws -> T {
         pthread_rwlock_rdlock(&liveCalls)
         defer { pthread_rwlock_unlock(&liveCalls) }
         guard let live = handle else { throw VectorTileError.closed }
+        let previous = mvt_set_thread_source_zoom_offset(UInt8(clamping: sourceZoomOffset))
+        defer { _ = mvt_set_thread_source_zoom_offset(previous) }
         return try body(live)
     }
 
     /// Source tiles needed to draw `z/x/y`, as JSON. Fetch them in order and
     /// pass the bytes to ``render(z:x:y:tileSize:tiles:)`` positionally.
-    public func plan(z: UInt8, x: UInt32, y: UInt32) throws -> String {
-        return try withRenderer { live in
+    public func plan(z: UInt8, x: UInt32, y: UInt32, sourceZoomOffset: Int = 0) throws -> String {
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
             guard let json = mvt_renderer_plan(live, z, x, y) else { return "[]" }
             defer { mvt_string_free(json) }
             return String(cString: json)
@@ -266,9 +228,10 @@ public final class VectorTileRenderer {
         x: UInt32,
         y: UInt32,
         tileSize: UInt32 = defaultTileSize,
-        tiles: [Data?]
+        tiles: [Data?],
+        sourceZoomOffset: Int = 0
     ) throws -> Data {
-        return try withRenderer { live in
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
 
             // The native side takes one concatenated buffer plus a length table,
             // which avoids marshalling an array-of-arrays across the ABI.
@@ -298,9 +261,10 @@ public final class VectorTileRenderer {
         x: UInt32,
         y: UInt32,
         tileSize: UInt32 = defaultTileSize,
-        tiles: [Data?]
+        tiles: [Data?],
+        sourceZoomOffset: Int = 0
     ) throws -> TessellatedTile {
-        return try withRenderer { live in
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
 
             var outPointer: UnsafeMutablePointer<Float>?
             var outLength = 0
@@ -347,51 +311,12 @@ public final class VectorTileRenderer {
     /// got. Fetch them, then feed each back through ``addGlyphs(_:)``.
     ///
     /// Empty when the style names no template, or everything needed is loaded.
-    public func neededGlyphs(z: UInt8, x: UInt32, y: UInt32, tiles: [Data?]) throws -> [String] {
-        return try withRenderer { live in
+    public func neededGlyphs(z: UInt8, x: UInt32, y: UInt32, tiles: [Data?], sourceZoomOffset: Int = 0) throws -> [String] {
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
             let json = withTiles(tiles) { data, dataLength, lengths, lengthsCount in
                 mvt_renderer_needed_glyphs(live, z, x, y, data, dataLength, lengths, lengthsCount)
             }
             return takeStrings(json)
-        }
-    }
-
-    /// The features in `z/x/y` a query asks for.
-    ///
-    /// A vector tile is data with a picture in it: every feature the renderer
-    /// paints carries its properties and shape, and this reads them back --
-    /// for "what is on screen", "what is under the finger", or a search box --
-    /// on any backend and offline, from the same tiles it draws. Tiles are
-    /// passed as for ``render(z:x:y:tileSize:tiles:)``; only the tile's own
-    /// requests are read, and a magnified ancestor reports its quadrant.
-    ///
-    /// - Parameters:
-    ///   - sourceLayer: only this source-layer (`"pois"`, `"streets"`...)
-    ///   - filter: a MapLibre filter expression, as JSON text
-    ///   - text: a case-insensitive substring some string property must contain
-    ///   - limit: stop after this many hits; 0 for no limit
-    /// - Throws: ``VectorTileError/renderFailed`` when `filter` is not JSON.
-    public func queryFeatures(
-        z: UInt8, x: UInt32, y: UInt32, tiles: [Data?],
-        sourceLayer: String? = nil, filter: String? = nil, text: String? = nil, limit: Int = 0
-    ) throws -> [VectorFeature] {
-        return try withRenderer { live in
-            let json: UnsafeMutablePointer<CChar>? = withTiles(tiles) { data, dataLength, lengths, lengthsCount in
-                withOptionalCString(sourceLayer) { layerPtr in
-                    withOptionalCString(filter) { filterPtr in
-                        withOptionalCString(text) { textPtr in
-                            mvt_renderer_query_features(
-                                live, z, x, y, data, dataLength, lengths, lengthsCount,
-                                layerPtr, filterPtr, textPtr, UInt32(max(0, limit))
-                            )
-                        }
-                    }
-                }
-            }
-            guard let json else { throw VectorTileError.renderFailed(MvtStatus.badArgument) }
-            defer { mvt_string_free(json) }
-            let text = String(cString: json)
-            return (try? JSONDecoder().decode([VectorFeature].self, from: Data(text.utf8))) ?? []
         }
     }
 
@@ -448,8 +373,8 @@ public final class VectorTileRenderer {
 
     /// Whether this tile must be drawn on the CPU because the style paints
     /// a pattern the GPU cannot draw or a polygon that is too costly to triangulate.
-    public func needsCPU(z: UInt8, tiles: [Data?]) throws -> Bool {
-        return try withRenderer { live in
+    public func needsCPU(z: UInt8, tiles: [Data?], sourceZoomOffset: Int = 0) throws -> Bool {
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
             return withTiles(tiles) { data, dataLength, lengths, lengthsCount in
                 mvt_renderer_needs_cpu(live, z, data, dataLength, lengths, lengthsCount)
             } == 1
@@ -468,9 +393,10 @@ public final class VectorTileRenderer {
         x: UInt32,
         y: UInt32,
         tileSize: UInt32 = defaultTileSize,
-        tiles: [Data?]
+        tiles: [Data?],
+        sourceZoomOffset: Int = 0
     ) throws -> Data {
-        return try withRenderer { live in
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
             var outPointer: UnsafeMutablePointer<UInt8>?
             var outLength = 0
 
@@ -499,9 +425,10 @@ public final class VectorTileRenderer {
         x: UInt32,
         y: UInt32,
         tileSize: UInt32 = defaultTileSize,
-        tiles: [Data?]
+        tiles: [Data?],
+        sourceZoomOffset: Int = 0
     ) throws -> LabelTile {
-        return try withRenderer { live in
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
             var outPointer: UnsafeMutablePointer<UInt8>?
             var outLength = 0
             var placed = 0
@@ -532,10 +459,11 @@ public final class VectorTileRenderer {
         y: UInt32,
         tileSize: UInt32 = defaultTileSize,
         rgba: inout Data,
-        tiles: [Data?]
+        tiles: [Data?],
+        sourceZoomOffset: Int = 0
     ) throws -> Int {
         try rgba.withUnsafeMutableBytes { pixels in
-            try drawLabels(z: z, x: x, y: y, tileSize: tileSize, rgba: pixels, tiles: tiles)
+            try drawLabels(z: z, x: x, y: y, tileSize: tileSize, rgba: pixels, tiles: tiles, sourceZoomOffset: sourceZoomOffset)
         }
     }
 
@@ -549,9 +477,10 @@ public final class VectorTileRenderer {
         y: UInt32,
         tileSize: UInt32 = defaultTileSize,
         rgba: UnsafeMutableRawBufferPointer,
-        tiles: [Data?]
+        tiles: [Data?],
+        sourceZoomOffset: Int = 0
     ) throws -> Int {
-        return try withRenderer { live in
+        return try withRenderer(sourceZoomOffset: sourceZoomOffset) { live in
             let placed = withTiles(tiles) { data, dataLength, lengths, lengthsCount in
                 mvt_renderer_draw_labels(
                     live, z, x, y, tileSize,

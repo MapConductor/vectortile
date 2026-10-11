@@ -107,6 +107,13 @@ unsafe fn hand_over(bytes: Vec<u8>, out_ptr: *mut *mut u8, out_len: *mut usize) 
     std::mem::forget(boxed);
 }
 
+/// Sets a source-level override for subsequent calls on the current thread.
+/// Returns the previous value, which the caller must restore after the call.
+#[no_mangle]
+pub extern "C" fn mvt_set_thread_source_zoom_offset(offset: u8) -> u8 {
+    mvt_render::set_thread_source_zoom_offset(offset)
+}
+
 /// Parses a style and returns a renderer handle, or null on failure.
 ///
 /// On failure, and if `error_out` is non-null, it receives an owned message

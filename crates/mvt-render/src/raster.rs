@@ -190,7 +190,7 @@ pub fn render_with_glyphs(
         // only what reaches this tile is drawn.
         let placed: Vec<_> = symbol::place(labels)
             .into_iter()
-            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .filter(|label| symbol::touches_tile(label.ink_bounds, tile_size))
             .collect();
         if !placed.is_empty() {
             stats.layers_drawn += 1;
@@ -276,7 +276,8 @@ fn draw_background(pixmap: &mut Pixmap, layer: &Layer, zoom: f64) {
     // have more than one background layer -- the tessellator's copy of this
     // says what real styles do with them -- and `fill` would drop whatever the
     // ones below it put down.
-    let Some(rect) = tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
+    let Some(rect) =
+        tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
     else {
         return;
     };

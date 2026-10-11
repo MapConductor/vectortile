@@ -8,9 +8,24 @@ export interface WorkerInitRequest {
     /** Style JSON as text; the main thread never sends a URL it has resolved. */
     readonly styleText: string;
     readonly tileSize: number;
+    /**
+     * The CSS px one tile covers, when that differs from `tileSize`.
+     *
+     * Must cross the boundary with everything else: the worker *is* the
+     * default path, so a display size the main thread keeps to itself would
+     * silently do nothing.
+     */
+    readonly displayTileSize?: number;
     readonly cacheBytes: number;
     readonly headers?: Record<string, string>;
     readonly wasmUrl?: string;
+    /**
+     * The caches live where the rendering does. Without these the worker --
+     * which is the default path -- would keep nothing on disk however the
+     * host asked, and the options would appear to do nothing.
+     */
+    readonly persistRenderedTiles?: boolean;
+    readonly persistSourceTiles?: boolean;
 }
 
 export interface WorkerInitResponse {

@@ -23,7 +23,7 @@ use crate::glyphs::{FontStack, Glyph, EDGE, GLYPH_SIZE, RANGE};
 /// A style names a stack per layer (`text-font`), and a stack is a list of
 /// faces tried in order — the first one holding a codepoint wins, which is how
 /// a Latin face and a CJK face cover a map between them.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GlyphStore {
     faces: HashMap<String, HashMap<u32, Glyph>>,
     /// Rendered coverage masks, so a glyph that appears on every tile is
@@ -32,7 +32,7 @@ pub struct GlyphStore {
     /// Behind a mutex because tiles render in parallel over a shared,
     /// otherwise read-only store; the lock is held for a lookup or an insert,
     /// never while rendering.
-    masks: std::sync::Mutex<HashMap<MaskKey, std::sync::Arc<Mask>>>,
+    masks: std::sync::Mutex<crate::memory_cache::MemoryCache<MaskKey, std::sync::Arc<Mask>>>,
 }
 
 /// What makes two uses of a glyph the same drawing.
@@ -60,11 +60,20 @@ struct Mask {
     alpha: Vec<u8>,
 }
 
-/// Masks kept before the cache empties itself. A style uses a handful of
-/// sizes per zoom and a few hundred distinct characters per city; the cap
-/// only stops a pathological style from growing without bound, and clearing
-/// everything beats an LRU -- the working set refills in one tile.
+/// Both count and bytes are bounded; large glyph sizes cannot exceed the budget.
 const MASK_CACHE_CAP: usize = 8192;
+
+impl Default for GlyphStore {
+    fn default() -> Self {
+        Self {
+            faces: HashMap::new(),
+            masks: std::sync::Mutex::new(crate::memory_cache::MemoryCache::new(
+                MASK_CACHE_CAP,
+                8 << 20,
+            )),
+        }
+    }
+}
 
 impl GlyphStore {
     pub fn new() -> Self {
@@ -617,16 +626,16 @@ fn blit_cached(
         threshold: threshold.to_bits(),
         gamma: gamma.to_bits(),
     };
-    let cached = store.masks.lock().ok().and_then(|m| m.get(&key).cloned());
+    let cached = store.masks.lock().ok().and_then(|mut m| m.get(&key));
     let mask = match cached {
         Some(mask) => mask,
         None => {
             let mask = std::sync::Arc::new(build_mask(glyph, ink.scale, threshold, gamma));
             if let Ok(mut masks) = store.masks.lock() {
-                if masks.len() >= MASK_CACHE_CAP {
-                    masks.clear();
-                }
-                masks.insert(key, mask.clone());
+                let cost = mask.alpha.capacity()
+                    + std::mem::size_of::<Mask>()
+                    + std::mem::size_of::<MaskKey>();
+                masks.insert(key, mask.clone(), cost);
             }
             mask
         }

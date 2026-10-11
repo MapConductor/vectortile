@@ -388,7 +388,15 @@ pub fn tessellate_with(
                     if size <= 0.0 {
                         continue;
                     }
-                    circle_feature(feature, tile, unify, out_extent, size, color, &mut out.vertices);
+                    circle_feature(
+                        feature,
+                        tile,
+                        unify,
+                        out_extent,
+                        size,
+                        color,
+                        &mut out.vertices,
+                    );
                 }
                 _ => {}
             }
@@ -446,7 +454,8 @@ pub fn translated_clip(
         for tri in src.vertices[first..end].chunks_exact(TRI) {
             let mut moved = [0f32; TRI];
             moved.copy_from_slice(tri);
-            let (mut min_x, mut min_y, mut max_x, mut max_y) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            let (mut min_x, mut min_y, mut max_x, mut max_y) =
+                (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
             for v in moved.chunks_exact_mut(VERTEX_STRIDE) {
                 v[0] = v[0] * unify + dx;
                 v[1] = v[1] * unify + dy;
@@ -993,7 +1002,10 @@ mod tests {
                 offset_y: 0.5,
             }];
             let result = tessellate(&style, 10.0, 512, 512.0, &decoded);
-            assert!(result.triangle_count() > 0, "extent {data_extent}: nothing drawn");
+            assert!(
+                result.triangle_count() > 0,
+                "extent {data_extent}: nothing drawn"
+            );
 
             // The polygon covers the whole parent, so magnified it must cover
             // this tile: its corners land outside, and the tile is inside
@@ -1037,9 +1049,24 @@ mod tests {
         // Polygons and roads spread over the parent, some crossing child
         // boundaries, one far off in a corner.
         let polys = vec![
-            vec![vec![[100.0, 100.0], [1500.0, 100.0], [1500.0, 1500.0], [100.0, 1500.0]]],
-            vec![vec![[1800.0, 1800.0], [3000.0, 1900.0], [2600.0, 3100.0], [1700.0, 2800.0]]],
-            vec![vec![[3900.0, 3900.0], [4090.0, 3900.0], [4090.0, 4090.0], [3900.0, 4090.0]]],
+            vec![vec![
+                [100.0, 100.0],
+                [1500.0, 100.0],
+                [1500.0, 1500.0],
+                [100.0, 1500.0],
+            ]],
+            vec![vec![
+                [1800.0, 1800.0],
+                [3000.0, 1900.0],
+                [2600.0, 3100.0],
+                [1700.0, 2800.0],
+            ]],
+            vec![vec![
+                [3900.0, 3900.0],
+                [4090.0, 3900.0],
+                [4090.0, 4090.0],
+                [3900.0, 4090.0],
+            ]],
         ];
         let roads = vec![
             vec![vec![[0.0, 2048.0], [span, 2100.0]]],
@@ -1048,23 +1075,56 @@ mod tests {
         let tile = model::Tile {
             layers: vec![
                 model::Layer::from_tables(
-                    "poly".into(), 4096, vec![], vec![],
-                    polys.into_iter().enumerate().map(|(i, rings)| {
-                        model::Feature::new(Some(i as u64 + 1), GeomType::Polygon, rings, vec![])
-                    }).collect(),
+                    "poly".into(),
+                    4096,
+                    vec![],
+                    vec![],
+                    polys
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, rings)| {
+                            model::Feature::new(
+                                Some(i as u64 + 1),
+                                GeomType::Polygon,
+                                rings,
+                                vec![],
+                            )
+                        })
+                        .collect(),
                 ),
                 model::Layer::from_tables(
-                    "road".into(), 4096, vec![], vec![],
-                    roads.into_iter().enumerate().map(|(i, parts)| {
-                        model::Feature::new(Some(i as u64 + 1), GeomType::LineString, parts, vec![])
-                    }).collect(),
+                    "road".into(),
+                    4096,
+                    vec![],
+                    vec![],
+                    roads
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, parts)| {
+                            model::Feature::new(
+                                Some(i as u64 + 1),
+                                GeomType::LineString,
+                                parts,
+                                vec![],
+                            )
+                        })
+                        .collect(),
                 ),
             ],
         };
         for scale in [2.0f32, 4.0] {
             let whole = tessellate_with(
-                &style, 12.0, 512, 512.0,
-                &[DecodedTile { source_id: "src", tile: &tile, scale, offset_x: 0.0, offset_y: 0.0 }],
+                &style,
+                12.0,
+                512,
+                512.0,
+                &[DecodedTile {
+                    source_id: "src",
+                    tile: &tile,
+                    scale,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                }],
                 false,
             );
             let across = scale as u32;
@@ -1072,13 +1132,27 @@ mod tests {
                 for cx in 0..across {
                     let (ox, oy) = (cx as f32 / scale, cy as f32 / scale);
                     let direct = tessellate(
-                        &style, 12.0, 512, 512.0,
-                        &[DecodedTile { source_id: "src", tile: &tile, scale, offset_x: ox, offset_y: oy }],
+                        &style,
+                        12.0,
+                        512,
+                        512.0,
+                        &[DecodedTile {
+                            source_id: "src",
+                            tile: &tile,
+                            scale,
+                            offset_x: ox,
+                            offset_y: oy,
+                        }],
                     );
                     let extent = direct.extent as f32;
                     assert_eq!(whole.extent, direct.extent);
                     let cut = translated_clip(
-                        &whole, 1.0, -ox * extent * scale, -oy * extent * scale, extent, extent / 64.0,
+                        &whole,
+                        1.0,
+                        -ox * extent * scale,
+                        -oy * extent * scale,
+                        extent,
+                        extent / 64.0,
                     );
                     let tri = |t: &Tessellation| -> Vec<[f32; 6]> {
                         t.vertices
@@ -1087,13 +1161,17 @@ mod tests {
                             .collect()
                     };
                     let (a, b) = (tri(&cut), tri(&direct));
-                    let same = |p: &[f32; 6], q: &[f32; 6]| p.iter().zip(q).all(|(x, y)| (x - y).abs() < 0.05);
+                    let same = |p: &[f32; 6], q: &[f32; 6]| {
+                        p.iter().zip(q).all(|(x, y)| (x - y).abs() < 0.05)
+                    };
                     let touches = |p: &[f32; 6]| {
                         let xs = [p[0], p[2], p[4]];
                         let ys = [p[1], p[3], p[5]];
                         let (lo, hi) = (0.0, extent);
-                        !(xs.iter().all(|&x| x < lo) || xs.iter().all(|&x| x > hi)
-                            || ys.iter().all(|&y| y < lo) || ys.iter().all(|&y| y > hi))
+                        !(xs.iter().all(|&x| x < lo)
+                            || xs.iter().all(|&x| x > hi)
+                            || ys.iter().all(|&y| y < lo)
+                            || ys.iter().all(|&y| y > hi))
                     };
                     for p in &a {
                         assert!(b.iter().any(|q| same(p, q)),
@@ -1105,7 +1183,10 @@ mod tests {
                     }
                     // Batches stay in style order.
                     let ids: Vec<&str> = cut.batches.iter().map(|b| b.layer_id.as_str()).collect();
-                    assert!(ids == ["f", "l"] || ids == ["f"] || ids == ["l"] || ids.is_empty(), "{ids:?}");
+                    assert!(
+                        ids == ["f", "l"] || ids == ["f"] || ids == ["l"] || ids.is_empty(),
+                        "{ids:?}"
+                    );
                 }
             }
         }
@@ -1249,7 +1330,10 @@ mod tests {
         let result = tessellate(&style, 10.0, 512, 512.0, &[]);
         let background = result.background.expect("a background");
         assert!((background.a - 1.0).abs() < 1e-6, "{background:?}");
-        assert!((background.r - 248.0 / 255.0).abs() < 1e-3, "{background:?}");
+        assert!(
+            (background.r - 248.0 / 255.0).abs() < 1e-3,
+            "{background:?}"
+        );
     }
 
     /// Half-transparent backgrounds mix rather than replace.

@@ -7,11 +7,19 @@ fn main() {
     r.add_glyphs(&glyphs).ok();
     for size in [256u32, 512, 1024] {
         let plan = r.plan(z, 0, 0);
-        let data: Vec<Option<&[u8]>> = plan.requests.iter().map(|_| Some(tile.as_slice())).collect();
+        let data: Vec<Option<&[u8]>> = plan
+            .requests
+            .iter()
+            .map(|_| Some(tile.as_slice()))
+            .collect();
         let sizes = r.label_sizes(z, size, &data);
         let mut uniq: Vec<String> = sizes.iter().map(|s| format!("{s:.1}")).collect();
         uniq.sort();
         uniq.dedup();
-        println!("tile_size={size:4} labels={:3} drawn text sizes(px)={:?}", sizes.len(), uniq);
+        println!(
+            "tile_size={size:4} labels={:3} drawn text sizes(px)={:?}",
+            sizes.len(),
+            uniq
+        );
     }
 }

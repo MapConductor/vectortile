@@ -2,6 +2,10 @@
 resolver = "2"
 members = [
     "crates/mvt-render",
+    "crates/mvt-style",
+    "crates/mvt-style-jni",
+    "crates/mvt-style-ffi",
+    "crates/mvt-style-wasm",
     "crates/tile-png",
     "crates/tile-png-jni",
     "crates/tile-png-ffi",

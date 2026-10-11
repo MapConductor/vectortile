@@ -109,9 +109,21 @@ pub struct Label {
     /// Axis-aligned box the label will cover, for collision. Covers both the
     /// text and the icon when there are both.
     pub bounds: [f32; 4],
+    /// As [`Label::bounds`], but out to where the glyphs are actually drawn:
+    /// font bearings and the SDF border reach past the line height.
+    ///
+    /// Used for "does this label draw in this tile" and nothing else. A
+    /// neighbour's label whose layout box lies outside the tile can still put
+    /// ink inside it, and filtering on [`Label::bounds`] cut that ink off at
+    /// the seam. Collisions are judged on [`Label::bounds`], because growing
+    /// every box by the SDF border drops labels the style expects to fit.
+    pub ink_bounds: [f32; 4],
     /// The halves on their own, so a style that marks one of them optional can
     /// be given the other when the pair will not fit.
     pub text_bounds: Option<[f32; 4]>,
+    /// [`Label::text_bounds`] out to the ink, to rebuild [`Label::ink_bounds`]
+    /// when the icon half is dropped.
+    pub ink_text_bounds: Option<[f32; 4]>,
     pub icon_bounds: Option<[f32; 4]>,
     /// `icon-optional` / `text-optional`: which half may be dropped to save
     /// the other. A POI layer routinely says the pin is expendable and the
@@ -433,7 +445,7 @@ pub fn collect(
                         opacity,
                     };
 
-                    let layout_text_bounds = if shaped.is_empty() || opacity <= 0.0 {
+                    let text_bounds = if shaped.is_empty() || opacity <= 0.0 {
                         None
                     } else {
                         match &curve {
@@ -444,9 +456,18 @@ pub fn collect(
 
                     // After the text, because `icon-text-fit` sizes the icon around
                     // it: a shield is only as wide as the number it carries.
-                    let icon =
-                        icon_placement(layer, &ctx, sprites, paint_scale, spot, layout_text_bounds);
-                    let text_bounds = layout_text_bounds.map(|nominal| {
+                    let icon = icon_placement(layer, &ctx, sprites, paint_scale, spot, text_bounds);
+                    // What the glyphs actually cover: font bearings and the SDF
+                    // border reach past the line height the layout box measures.
+                    //
+                    // It decides one thing only -- whether the label draws in
+                    // this tile, because a neighbour's label whose layout box
+                    // lies outside it can still have ink inside. Collision
+                    // stays on the layout box: judging contests by the ink box
+                    // grows every label by the SDF border and drops labels the
+                    // style expects to fit. Both tiles compute both boxes the
+                    // same way, so they still reach the same verdict.
+                    let ink_text_bounds = text_bounds.map(|nominal| {
                         if curve.is_some() {
                             nominal
                         } else {
@@ -476,6 +497,7 @@ pub fn collect(
                     let Some(bounds) = union(text_bounds, icon_bounds) else {
                         continue;
                     };
+                    let ink_bounds = union(ink_text_bounds, icon_bounds).unwrap_or(bounds);
 
                     let allow_overlap = layer
                         .layout_value("text-allow-overlap", &ctx)
@@ -541,7 +563,9 @@ pub fn collect(
                         at,
                         icon,
                         bounds,
+                        ink_bounds,
                         text_bounds,
+                        ink_text_bounds,
                         icon_bounds,
                         icon_optional: layer
                             .layout_value("icon-optional", &ctx)
@@ -904,6 +928,7 @@ pub fn place(labels: Vec<Label>) -> Vec<Label> {
                 if fits(text_only, label.padding, &kept) {
                     label.icon = None;
                     label.bounds = text_only;
+                    label.ink_bounds = label.ink_text_bounds.unwrap_or(text_only);
                     kept.push(label);
                     continue;
                 }
@@ -914,6 +939,8 @@ pub fn place(labels: Vec<Label>) -> Vec<Label> {
                 if fits(icon_only, label.padding, &kept) {
                     label.shaped = Shaped::default();
                     label.bounds = icon_only;
+                    // No text left, so the icon's own box is all the ink there is.
+                    label.ink_bounds = icon_only;
                     kept.push(label);
                     continue;
                 }
@@ -1631,6 +1658,17 @@ mod tests {
             "expected it to straddle the edge, got {:?}",
             placed[0].bounds
         );
+        // The ink box is never smaller than the box the contest is judged on,
+        // or a label could be placed here and then filtered out of the tile it
+        // was placed for.
+        let (layout, ink) = (placed[0].bounds, placed[0].ink_bounds);
+        assert!(
+            ink[0] <= layout[0]
+                && ink[1] <= layout[1]
+                && ink[2] >= layout[2]
+                && ink[3] >= layout[3],
+            "ink {ink:?} must cover layout {layout:?}"
+        );
 
         // One in the middle of the neighbour draws nothing here, but it is
         // still carried: it may be the rival that decides whether a label on
@@ -1662,9 +1700,9 @@ mod tests {
             "a rival within a tile must still be judged"
         );
         assert!(
-            !touches_tile(carried[0].bounds, 512),
+            !touches_tile(carried[0].ink_bounds, 512),
             "but it draws nothing here, got {:?}",
-            carried[0].bounds
+            carried[0].ink_bounds
         );
 
         // Two tiles away it cannot overlap anything this tile draws.
@@ -2174,7 +2212,9 @@ mod tests {
             icon: None,
             curve: None,
             bounds: [x, y, x + w, y + h],
+            ink_bounds: [x, y, x + w, y + h],
             text_bounds: Some([x, y, x + w, y + h]),
+            ink_text_bounds: Some([x, y, x + w, y + h]),
             icon_bounds: None,
             icon_optional: false,
             text_optional: false,
@@ -2185,6 +2225,34 @@ mod tests {
             padding: 0.0,
             allow_overlap,
         }
+    }
+
+    /// Contests are decided on the layout box, never on the ink box.
+    ///
+    /// The ink box is wider -- a glyph's SDF border alone is three pixels a
+    /// side at the size most styles label at -- and judging collisions by it
+    /// grows every label, so pairs that the style (and MapLibre) expect to sit
+    /// side by side start dropping one of the two. The ink box exists only to
+    /// decide which tile a label's pixels land in.
+    #[test]
+    fn labels_whose_ink_overlaps_but_whose_layout_boxes_do_not_are_both_kept() {
+        let mut first = label(0.0, 0.0, 50.0, 20.0, false);
+        let mut second = label(54.0, 0.0, 50.0, 20.0, false);
+        first.ink_bounds = grow(first.bounds, 3.0);
+        second.ink_bounds = grow(second.bounds, 3.0);
+        assert!(
+            !overlaps(first.bounds, second.bounds),
+            "the layout boxes are four pixels apart"
+        );
+        assert!(
+            overlaps(first.ink_bounds, second.ink_bounds),
+            "but the ink boxes do meet"
+        );
+        assert_eq!(
+            place(vec![first, second]).len(),
+            2,
+            "both fit, because the contest is judged on the layout box"
+        );
     }
 
     #[test]

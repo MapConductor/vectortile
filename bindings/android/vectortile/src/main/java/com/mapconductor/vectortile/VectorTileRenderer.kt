@@ -60,6 +60,10 @@ class VectorTileRenderer private constructor(
          * 15: the whole background stack, not its last layer.
          * 16: magnified geometry lands inside its tile on the GPU path.
          * 17: labels judged against a tile of margin, so neighbours agree.
+         * 18: glyph pixels align across tile boundaries.
+         * 19: label bounds include glyph bearings and SDF raster extents.
+         * 20: that extent decides which tile a label draws in; collisions are
+         *     judged on the layout box again, so labels are as dense as before.
          */
         const val OUTPUT_VERSION: Int = 23
 
@@ -120,40 +124,6 @@ class VectorTileRenderer private constructor(
      * Hands one fetched range to the renderer, which keeps it for every later
      * tile. Returns how many glyphs it gained.
      */
-    /**
-     * The features in `z/x/y` a query asks for.
-     *
-     * A vector tile is data with a picture in it: every feature the renderer
-     * paints carries its properties and shape, and this reads them back -- for
-     * "what is on screen", "what is under the finger", or a search box -- on
-     * any backend and offline, from the same tiles it draws. Tiles are passed
-     * as for [render]; only the tile's own requests are read, and a magnified
-     * ancestor reports its quadrant.
-     *
-     * @param sourceLayer only this source-layer (`"pois"`, `"streets"`...)
-     * @param filter a MapLibre filter expression, as JSON text
-     * @param text a case-insensitive substring some string property must contain
-     * @param limit stop after this many hits; 0 for no limit
-     * @throws IllegalArgumentException when [filter] is not JSON
-     */
-    fun queryFeatures(
-        z: Int,
-        x: Int,
-        y: Int,
-        tiles: List<ByteArray?>,
-        sourceLayer: String? = null,
-        filter: String? = null,
-        text: String? = null,
-        limit: Int = 0,
-    ): List<VectorFeature> {
-        val (data, lengths) = pack(tiles)
-        val json =
-            withRenderer { handle ->
-                NativeRenderer.nativeQueryFeatures(handle, z, x, y, data, lengths, sourceLayer, filter, text, limit)
-            }
-        return VectorFeature.listFromJson(json)
-    }
-
     fun addGlyphs(pbf: ByteArray): Int = withRenderer { handle -> NativeRenderer.nativeAddGlyphs(handle, pbf) }
 
     /**
@@ -333,57 +303,6 @@ class VectorTileRenderer private constructor(
             // getAndSet keeps a double close from freeing the same pointer twice.
             val value = handle.getAndSet(0L)
             if (value != 0L) NativeRenderer.nativeFree(value)
-        }
-    }
-}
-
-/** A feature found by [VectorTileRenderer.queryFeatures]. */
-data class VectorFeature(
-    val sourceId: String,
-    /** The source-layer the feature is in. */
-    val layer: String,
-    val id: Long?,
-    /** `Point`, `LineString`, `Polygon` or `Unknown`. */
-    val geometry: String,
-    /**
-     * A point to hang the feature on: the point itself, the middle vertex of
-     * a line, the centre of a polygon's box.
-     */
-    val lon: Double,
-    val lat: Double,
-    /** West, south, east, north. */
-    val bounds: List<Double>,
-    /** Values are String, Double, Long or Boolean, as the tile stored them. */
-    val properties: Map<String, Any>,
-) {
-    /** The `name` property, the thing most searches show. */
-    val name: String? get() = properties["name"] as? String
-
-    companion object {
-        internal fun listFromJson(json: String): List<VectorFeature> {
-            val array = JSONArray(json)
-            return (0 until array.length()).map { i ->
-                val o = array.getJSONObject(i)
-                val props = o.optJSONObject("properties") ?: org.json.JSONObject()
-                val boundsArray = o.optJSONArray("bounds")
-                VectorFeature(
-                    sourceId = o.optString("sourceId"),
-                    layer = o.optString("layer"),
-                    id = if (o.isNull("id")) null else o.optLong("id"),
-                    geometry = o.optString("geometry", "Unknown"),
-                    lon = o.optDouble("lon"),
-                    lat = o.optDouble("lat"),
-                    bounds = List(4) { k -> boundsArray?.optDouble(k) ?: 0.0 },
-                    properties =
-                        props.keys().asSequence().associateWith { key ->
-                            when (val v = props.get(key)) {
-                                is Int -> v.toLong()
-                                is Long, is Double, is Boolean, is String -> v
-                                else -> v.toString()
-                            }
-                        },
-                )
-            }
         }
     }
 }

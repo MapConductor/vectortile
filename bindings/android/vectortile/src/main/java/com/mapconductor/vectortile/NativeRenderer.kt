@@ -82,23 +82,6 @@ internal object NativeRenderer {
     ): String
 
     /** Hands over one fetched range; returns how many glyphs it added. */
-    /**
-     * Features in the tile as a JSON array; see [VectorTileRenderer.queryFeatures].
-     * Null strings mean "no restriction". A filter that is not JSON throws.
-     */
-    external fun nativeQueryFeatures(
-        handle: Long,
-        z: Int,
-        x: Int,
-        y: Int,
-        data: ByteArray,
-        lengths: IntArray,
-        sourceLayer: String?,
-        filterJson: String?,
-        text: String?,
-        limit: Int,
-    ): String
-
     external fun nativeSpriteUrls(
         handle: Long,
         pixelRatio: Int,

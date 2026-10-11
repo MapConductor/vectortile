@@ -1,0 +1,19 @@
+[package]
+name = "mvt-style"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Declarative adjustments to a MapLibre style, applied the same way on every renderer"
+
+# serde_json and nothing else. This crate ships as its own native library so
+# that an app using only MapLibre, Mapbox or MapTiler can adjust a style
+# without linking the rasteriser; a dependency on `mvt-render` here would
+# undo that.
+[dependencies]
+# `preserve_order` so a style comes out with its keys in the order its author
+# wrote them. serde_json's default map is sorted, which would rewrite every
+# object in the document -- including the ones no rule touched -- and this
+# crate's whole promise is that what it was not asked to change comes through
+# untouched. Caught by the Android binding's test, which compared the output
+# text to the input and found the sources object reordered.
+serde_json = { workspace = true, features = ["preserve_order"] }

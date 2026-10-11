@@ -44,9 +44,12 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
         ready = TileRenderCore.create({
             style: message.styleText,
             tileSize: message.tileSize,
+            displayTileSize: message.displayTileSize,
             cacheBytes: message.cacheBytes,
             headers: message.headers,
             wasmUrl: message.wasmUrl,
+            persistRenderedTiles: message.persistRenderedTiles,
+            persistSourceTiles: message.persistSourceTiles,
             onWarning: (text) => warnings.push(text),
         });
         ready.then(

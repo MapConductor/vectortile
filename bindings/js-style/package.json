@@ -1,0 +1,33 @@
+{
+  "name": "@mapconductor/vectorstyle",
+  "version": "0.1.0",
+  "description": "Declarative adjustments to a MapLibre style, applied the same way on every renderer",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./wasm": "./pkg/mvt_style_wasm_bg.wasm"
+  },
+  "files": [
+    "dist",
+    "pkg"
+  ],
+  "scripts": {
+    "build:wasm": "wasm-pack build ../../crates/mvt-style-wasm --target web --out-dir ../../bindings/js-style/pkg --release",
+    "build": "npm run build:wasm && npm run build:js",
+    "build:js": "tsup src/index.ts --format esm --dts --external ../pkg/mvt_style_wasm.js",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist pkg",
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3"
+  }
+}

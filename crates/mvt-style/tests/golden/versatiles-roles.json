@@ -1,0 +1,3268 @@
+[
+  {
+    "id": "background",
+    "kind": "background",
+    "sourceLayer": null,
+    "roles": [
+      "background"
+    ],
+    "evidence": [
+      "kind:background"
+    ]
+  },
+  {
+    "id": "slot-below-fills",
+    "kind": "background",
+    "sourceLayer": null,
+    "roles": [
+      "background"
+    ],
+    "evidence": [
+      "kind:background"
+    ]
+  },
+  {
+    "id": "water-ocean",
+    "kind": "fill",
+    "sourceLayer": "ocean",
+    "roles": [
+      "water"
+    ],
+    "evidence": [
+      "shortbread:ocean"
+    ]
+  },
+  {
+    "id": "land-glacier",
+    "kind": "fill",
+    "sourceLayer": "water_polygons",
+    "roles": [
+      "water"
+    ],
+    "evidence": [
+      "shortbread:water_polygons"
+    ]
+  },
+  {
+    "id": "land-commercial",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-industrial",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-residential",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-agriculture",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-waste",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-park",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-garden",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-burial",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-leisure",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-rock",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-forest",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-grass",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-vegetation",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-sand",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "land-wetland",
+    "kind": "fill",
+    "sourceLayer": "land",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:land"
+    ]
+  },
+  {
+    "id": "site-dangerarea",
+    "kind": "fill",
+    "sourceLayer": "sites",
+    "roles": [
+      "landuse"
+    ],
+    "evidence": [
+      "shortbread:sites"
+    ]
+  },
+  {
+    "id": "site-sportscentre",
+    "kind": "fill",
+    "sourceLayer": "sites",
+    "roles": [
+      "landuse"
+    ],
+    "evidence": [
+      "shortbread:sites"
+    ]
+  },
+  {
+    "id": "site-education",
+    "kind": "fill",
+    "sourceLayer": "sites",
+    "roles": [
+      "landuse"
+    ],
+    "evidence": [
+      "shortbread:sites"
+    ]
+  },
+  {
+    "id": "site-hospital",
+    "kind": "fill",
+    "sourceLayer": "sites",
+    "roles": [
+      "landuse"
+    ],
+    "evidence": [
+      "shortbread:sites"
+    ]
+  },
+  {
+    "id": "site-prison",
+    "kind": "fill",
+    "sourceLayer": "sites",
+    "roles": [
+      "landuse"
+    ],
+    "evidence": [
+      "shortbread:sites"
+    ]
+  },
+  {
+    "id": "site-parking",
+    "kind": "fill",
+    "sourceLayer": "sites",
+    "roles": [
+      "landuse"
+    ],
+    "evidence": [
+      "shortbread:sites"
+    ]
+  },
+  {
+    "id": "site-construction",
+    "kind": "fill",
+    "sourceLayer": "sites",
+    "roles": [
+      "landuse"
+    ],
+    "evidence": [
+      "shortbread:sites"
+    ]
+  },
+  {
+    "id": "water-river",
+    "kind": "line",
+    "sourceLayer": "water_lines",
+    "roles": [
+      "waterway"
+    ],
+    "evidence": [
+      "shortbread:water_lines"
+    ]
+  },
+  {
+    "id": "water-canal",
+    "kind": "line",
+    "sourceLayer": "water_lines",
+    "roles": [
+      "waterway"
+    ],
+    "evidence": [
+      "shortbread:water_lines"
+    ]
+  },
+  {
+    "id": "water-stream",
+    "kind": "line",
+    "sourceLayer": "water_lines",
+    "roles": [
+      "waterway"
+    ],
+    "evidence": [
+      "shortbread:water_lines"
+    ]
+  },
+  {
+    "id": "water-ditch",
+    "kind": "line",
+    "sourceLayer": "water_lines",
+    "roles": [
+      "waterway"
+    ],
+    "evidence": [
+      "shortbread:water_lines"
+    ]
+  },
+  {
+    "id": "water-area",
+    "kind": "fill",
+    "sourceLayer": "water_polygons",
+    "roles": [
+      "water"
+    ],
+    "evidence": [
+      "shortbread:water_polygons"
+    ]
+  },
+  {
+    "id": "water-area-river",
+    "kind": "fill",
+    "sourceLayer": "water_polygons",
+    "roles": [
+      "water"
+    ],
+    "evidence": [
+      "shortbread:water_polygons"
+    ]
+  },
+  {
+    "id": "water-area-small",
+    "kind": "fill",
+    "sourceLayer": "water_polygons",
+    "roles": [
+      "water"
+    ],
+    "evidence": [
+      "shortbread:water_polygons"
+    ]
+  },
+  {
+    "id": "water-dam-area",
+    "kind": "fill",
+    "sourceLayer": "dam_polygons",
+    "roles": [
+      "water"
+    ],
+    "evidence": [
+      "shortbread:dam_polygons"
+    ]
+  },
+  {
+    "id": "water-dam",
+    "kind": "line",
+    "sourceLayer": "dam_lines",
+    "roles": [
+      "waterway"
+    ],
+    "evidence": [
+      "shortbread:dam_lines"
+    ]
+  },
+  {
+    "id": "water-pier-area",
+    "kind": "fill",
+    "sourceLayer": "pier_polygons",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:pier_polygons"
+    ]
+  },
+  {
+    "id": "water-pier",
+    "kind": "line",
+    "sourceLayer": "pier_lines",
+    "roles": [
+      "land"
+    ],
+    "evidence": [
+      "shortbread:pier_lines"
+    ]
+  },
+  {
+    "id": "airport-area",
+    "kind": "fill",
+    "sourceLayer": "street_polygons",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:street_polygons"
+    ]
+  },
+  {
+    "id": "airport-taxiway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "airport-runway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "airport-taxiway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "airport-runway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "building:outline",
+    "kind": "fill",
+    "sourceLayer": "buildings",
+    "roles": [
+      "building"
+    ],
+    "evidence": [
+      "shortbread:buildings"
+    ]
+  },
+  {
+    "id": "building",
+    "kind": "fill",
+    "sourceLayer": "buildings",
+    "roles": [
+      "building"
+    ],
+    "evidence": [
+      "shortbread:buildings"
+    ]
+  },
+  {
+    "id": "slot-below-streets",
+    "kind": "background",
+    "sourceLayer": null,
+    "roles": [
+      "background"
+    ],
+    "evidence": [
+      "kind:background"
+    ]
+  },
+  {
+    "id": "tunnel-street-pedestrian-zone",
+    "kind": "fill",
+    "sourceLayer": "street_polygons",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:street_polygons"
+    ]
+  },
+  {
+    "id": "tunnel-way-footway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-way-steps:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-way-path:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-way-cycleway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-track:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-pedestrian:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-livingstreet:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-minor:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-bus:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-tertiary-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-arterial-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-trunk-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-motorway-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-tertiary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-secondary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-primary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-trunk:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-street-motorway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-way-footway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-way-steps",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-way-path",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-way-cycleway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-track",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-pedestrian",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-livingstreet",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-minor",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-bus",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-pedestrian-bicycle",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-minor-bicycle",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-tertiary-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-arterial-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-trunk-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-motorway-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-tertiary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-secondary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-primary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-trunk",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-street-motorway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-transport-rail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-transport-rail-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-transport-lightrail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-transport-lightrail-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-transport-subway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-transport-minorrail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "tunnel-transport-rail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-transport-rail-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-transport-lightrail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-transport-lightrail-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-transport-subway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "tunnel-transport-minorrail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge",
+    "kind": "fill",
+    "sourceLayer": "bridges",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:bridges"
+    ]
+  },
+  {
+    "id": "street-pedestrian-zone",
+    "kind": "fill",
+    "sourceLayer": "street_polygons",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:street_polygons"
+    ]
+  },
+  {
+    "id": "way-footway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "way-steps:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "way-path:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "way-cycleway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-track:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-pedestrian:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-livingstreet:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-minor:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-bus:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-tertiary-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-arterial-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-trunk-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-motorway-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-tertiary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-secondary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-primary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-trunk:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "street-motorway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "way-footway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "way-steps",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "way-path",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "way-cycleway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-track",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-pedestrian",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-livingstreet",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-minor",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-bus",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-pedestrian-bicycle",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-minor-bicycle",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-tertiary-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-arterial-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-trunk-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-motorway-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-tertiary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-secondary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-primary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-trunk",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "street-motorway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "transport-rail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "transport-rail-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "transport-lightrail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "transport-lightrail-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "transport-subway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "transport-minorrail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "aerialway:outline",
+    "kind": "line",
+    "sourceLayer": "aerialways",
+    "roles": [
+      "transit"
+    ],
+    "evidence": [
+      "shortbread:aerialways"
+    ]
+  },
+  {
+    "id": "transport-rail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "transport-rail-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "transport-lightrail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "transport-lightrail-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "transport-subway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "transport-minorrail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "aerialway",
+    "kind": "line",
+    "sourceLayer": "aerialways",
+    "roles": [
+      "transit"
+    ],
+    "evidence": [
+      "shortbread:aerialways"
+    ]
+  },
+  {
+    "id": "transport-ferry",
+    "kind": "line",
+    "sourceLayer": "ferries",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:ferries"
+    ]
+  },
+  {
+    "id": "bridge-way-footway:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-way-steps:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-way-paths:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-track:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-pedestrian:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-service:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-minor:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-tertiary-link:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-arterial-link:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-trunk-link:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-motorway-link:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-tertiary:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-secondary:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-primary:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-trunk:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-motorway:bridge",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-pedestrian-zone",
+    "kind": "fill",
+    "sourceLayer": "street_polygons",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:street_polygons"
+    ]
+  },
+  {
+    "id": "bridge-way-footway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-way-steps:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-way-path:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-way-cycleway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-track:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-pedestrian:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-livingstreet:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-minor:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-bus:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-tertiary-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-arterial-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-trunk-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-motorway-link:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-tertiary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-secondary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-primary:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-trunk:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-street-motorway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-way-footway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-way-steps",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-way-path",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-way-cycleway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-track",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-pedestrian",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-livingstreet",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-minor",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-bus",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-pedestrian-bicycle",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-minor-bicycle",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-tertiary-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-arterial-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-trunk-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-motorway-link",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-tertiary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-secondary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-primary",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-trunk",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-street-motorway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-transport-rail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-transport-rail-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-transport-lightrail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-transport-lightrail-service:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-transport-subway:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-transport-minorrail:outline",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "road-casing"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "id~*-casing"
+    ]
+  },
+  {
+    "id": "bridge-transport-rail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-transport-rail-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-transport-lightrail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-transport-lightrail-service",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-transport-subway",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "bridge-transport-minorrail",
+    "kind": "line",
+    "sourceLayer": "streets",
+    "roles": [
+      "road"
+    ],
+    "evidence": [
+      "shortbread:streets"
+    ]
+  },
+  {
+    "id": "slot-below-symbols",
+    "kind": "background",
+    "sourceLayer": null,
+    "roles": [
+      "background"
+    ],
+    "evidence": [
+      "kind:background"
+    ]
+  },
+  {
+    "id": "boundary-country:outline",
+    "kind": "line",
+    "sourceLayer": "boundaries",
+    "roles": [
+      "boundary"
+    ],
+    "evidence": [
+      "shortbread:boundaries"
+    ]
+  },
+  {
+    "id": "boundary-state:outline",
+    "kind": "line",
+    "sourceLayer": "boundaries",
+    "roles": [
+      "boundary"
+    ],
+    "evidence": [
+      "shortbread:boundaries"
+    ]
+  },
+  {
+    "id": "boundary-country",
+    "kind": "line",
+    "sourceLayer": "boundaries",
+    "roles": [
+      "boundary"
+    ],
+    "evidence": [
+      "shortbread:boundaries"
+    ]
+  },
+  {
+    "id": "boundary-country-disputed",
+    "kind": "line",
+    "sourceLayer": "boundaries",
+    "roles": [
+      "boundary"
+    ],
+    "evidence": [
+      "shortbread:boundaries"
+    ]
+  },
+  {
+    "id": "boundary-state",
+    "kind": "line",
+    "sourceLayer": "boundaries",
+    "roles": [
+      "boundary"
+    ],
+    "evidence": [
+      "shortbread:boundaries"
+    ]
+  },
+  {
+    "id": "boundary-country-maritime",
+    "kind": "line",
+    "sourceLayer": "boundaries",
+    "roles": [
+      "boundary"
+    ],
+    "evidence": [
+      "shortbread:boundaries"
+    ]
+  },
+  {
+    "id": "label-address-housenumber",
+    "kind": "symbol",
+    "sourceLayer": "addresses",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:addresses"
+    ]
+  },
+  {
+    "id": "marking-oneway",
+    "kind": "symbol",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "marking-oneway-reverse",
+    "kind": "symbol",
+    "sourceLayer": "streets",
+    "roles": [
+      "road",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:streets",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-amenity",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-leisure",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-tourism",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-shop",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-man_made",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-historic",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-emergency",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-highway",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "poi-office",
+    "kind": "symbol",
+    "sourceLayer": "pois",
+    "roles": [
+      "poi",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:pois",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "slot-below-labels",
+    "kind": "background",
+    "sourceLayer": null,
+    "roles": [
+      "background"
+    ],
+    "evidence": [
+      "kind:background"
+    ]
+  },
+  {
+    "id": "label-motorway-exit",
+    "kind": "symbol",
+    "sourceLayer": "street_labels_points",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels_points"
+    ]
+  },
+  {
+    "id": "label-motorway-shield",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-track",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-pedestrian",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-livingstreet",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-residential",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-unclassified",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-tertiary",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-secondary",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-primary",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-trunk",
+    "kind": "symbol",
+    "sourceLayer": "street_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:street_labels"
+    ]
+  },
+  {
+    "id": "label-street-pedestrian-zone",
+    "kind": "symbol",
+    "sourceLayer": "streets_polygons_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "label-water-area-major",
+    "kind": "symbol",
+    "sourceLayer": "water_polygons_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:water_polygons_labels"
+    ]
+  },
+  {
+    "id": "label-water-area-large",
+    "kind": "symbol",
+    "sourceLayer": "water_polygons_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:water_polygons_labels"
+    ]
+  },
+  {
+    "id": "label-water-area-medium",
+    "kind": "symbol",
+    "sourceLayer": "water_polygons_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:water_polygons_labels"
+    ]
+  },
+  {
+    "id": "label-water-area-small",
+    "kind": "symbol",
+    "sourceLayer": "water_polygons_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:water_polygons_labels"
+    ]
+  },
+  {
+    "id": "label-water-river",
+    "kind": "symbol",
+    "sourceLayer": "water_lines_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:water_lines_labels"
+    ]
+  },
+  {
+    "id": "label-water-stream",
+    "kind": "symbol",
+    "sourceLayer": "water_lines_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:water_lines_labels"
+    ]
+  },
+  {
+    "id": "symbol-transit-bus",
+    "kind": "symbol",
+    "sourceLayer": "public_transport",
+    "roles": [
+      "transit",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:public_transport",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "symbol-transit-tram",
+    "kind": "symbol",
+    "sourceLayer": "public_transport",
+    "roles": [
+      "transit",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:public_transport",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "symbol-transit-station",
+    "kind": "symbol",
+    "sourceLayer": "public_transport",
+    "roles": [
+      "transit",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:public_transport",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "symbol-transit-airfield",
+    "kind": "symbol",
+    "sourceLayer": "public_transport",
+    "roles": [
+      "transit",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:public_transport",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "symbol-transit-airport",
+    "kind": "symbol",
+    "sourceLayer": "public_transport",
+    "roles": [
+      "transit",
+      "label"
+    ],
+    "evidence": [
+      "shortbread:public_transport",
+      "kind:symbol"
+    ]
+  },
+  {
+    "id": "label-place-neighbourhood",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-place-quarter",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-place-suburb",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-place-hamlet",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-place-village",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-place-town",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-boundary-state",
+    "kind": "symbol",
+    "sourceLayer": "boundary_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:boundary_labels"
+    ]
+  },
+  {
+    "id": "label-place-city",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-place-statecapital",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-place-capital",
+    "kind": "symbol",
+    "sourceLayer": "place_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:place_labels"
+    ]
+  },
+  {
+    "id": "label-boundary-country-small",
+    "kind": "symbol",
+    "sourceLayer": "boundary_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:boundary_labels"
+    ]
+  },
+  {
+    "id": "label-boundary-country-medium",
+    "kind": "symbol",
+    "sourceLayer": "boundary_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:boundary_labels"
+    ]
+  },
+  {
+    "id": "label-boundary-country-large",
+    "kind": "symbol",
+    "sourceLayer": "boundary_labels",
+    "roles": [
+      "label"
+    ],
+    "evidence": [
+      "shortbread:boundary_labels"
+    ]
+  }
+]

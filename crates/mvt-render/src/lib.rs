@@ -34,10 +34,21 @@
 //! [`Renderer::unsupported_layer_types`] reports layer types nothing here
 //! draws at all: raster, hillshade, fill-extrusion.
 
+// A host may request the nearest raster grid while its vector basemap uses
+// the lower source level. Scope this override to each native call/thread.
+thread_local! {
+    static EXTRA_SOURCE_ZOOM_OFFSET: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+pub fn set_thread_source_zoom_offset(offset: u8) -> u8 {
+    EXTRA_SOURCE_ZOOM_OFFSET.with(|current| current.replace(offset.min(8)))
+}
+
 mod clock;
-mod decode_cache;
 pub mod color;
 pub mod dash;
+mod decode_cache;
+mod memory_cache;
 pub mod expr;
 pub mod filter;
 pub mod glyphs;
@@ -46,6 +57,7 @@ pub mod model;
 pub mod mvt;
 pub mod query;
 pub mod raster;
+mod seams;
 pub mod sprite;
 pub mod style;
 pub mod symbol;
@@ -129,7 +141,7 @@ pub struct Renderer {
     /// walk and triangulate the source again for its own sixteenth.
     #[cfg(feature = "tessellate")]
     tessellations:
-        std::sync::RwLock<Vec<(TessellationKey, std::sync::Arc<tessellate::Tessellation>)>>,
+        std::sync::RwLock<memory_cache::MemoryCache<TessellationKey, std::sync::Arc<tessellate::Tessellation>>>,
     /// The style's sprite sheet, once the host has fetched it. One sheet
     /// covers the whole style, so unlike glyphs there is nothing to accumulate
     /// -- it is either loaded or it is not.
@@ -201,7 +213,7 @@ const TESSELLATION_CACHE: usize = 12;
 /// (source, z, x, y) of the source tile, then the output level and pixel size
 /// the triangulation was made for. Scale follows from the two levels.
 #[cfg(feature = "tessellate")]
-type TessellationKey = (String, u8, u32, u32, u8, u32);
+type TessellationKey = (String, u8, u32, u32, u8, u32, u8);
 
 /// Where a style's sprite sheet lives: an index and the image it indexes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +230,7 @@ impl Renderer {
             label_tiles: decode_cache::DecodeCache::new(LABEL_TILE_CACHE),
             source_tiles: decode_cache::DecodeCache::new(SOURCE_TILE_CACHE),
             #[cfg(feature = "tessellate")]
-            tessellations: std::sync::RwLock::new(Vec::new()),
+            tessellations: std::sync::RwLock::new(memory_cache::MemoryCache::new(TESSELLATION_CACHE, 32 << 20)),
             sprites: std::sync::RwLock::new(None),
             display_tile_size: DEFAULT_TILE_SIZE,
         })
@@ -231,7 +243,7 @@ impl Renderer {
             label_tiles: decode_cache::DecodeCache::new(LABEL_TILE_CACHE),
             source_tiles: decode_cache::DecodeCache::new(SOURCE_TILE_CACHE),
             #[cfg(feature = "tessellate")]
-            tessellations: std::sync::RwLock::new(Vec::new()),
+            tessellations: std::sync::RwLock::new(memory_cache::MemoryCache::new(TESSELLATION_CACHE, 32 << 20)),
             sprites: std::sync::RwLock::new(None),
             display_tile_size: DEFAULT_TILE_SIZE,
         }
@@ -266,11 +278,7 @@ impl Renderer {
         &self,
         key: &TessellationKey,
     ) -> Option<std::sync::Arc<tessellate::Tessellation>> {
-        let cache = self.tessellations.read().ok()?;
-        cache
-            .iter()
-            .find(|(cached, _)| cached == key)
-            .map(|(_, t)| t.clone())
+        self.tessellations.write().ok()?.get(key)
     }
 
     #[cfg(feature = "tessellate")]
@@ -282,14 +290,21 @@ impl Renderer {
         let Ok(mut cache) = self.tessellations.write() else {
             return;
         };
-        cache.retain(|(cached, _)| cached != &key);
-        cache.insert(0, (key, t));
-        cache.truncate(TESSELLATION_CACHE);
+        let cost = t.vertices.capacity() * std::mem::size_of::<f32>()
+            + t.batches.capacity() * std::mem::size_of::<tessellate::Batch>()
+            + std::mem::size_of::<tessellate::Tessellation>() + key.0.capacity();
+        cache.insert(key, t, cost);
     }
 
     /// dp of screen one tile covers. See the field for the two rules it sets.
     pub fn display_tile_size(&self) -> u32 {
         self.display_tile_size
+    }
+
+    // A finer target grid is a subdivision of the canonical vector tile.
+    // Its crop keeps the parent's style zoom and magnified paint sizes.
+    fn effective_display_tile_size(&self) -> f64 {
+        self.display_tile_size as f64 / 2f64.powi(EXTRA_SOURCE_ZOOM_OFFSET.with(|current| current.get()) as i32)
     }
 
     /// The zoom the style is read at for a tile of this level.
@@ -298,12 +313,12 @@ impl Renderer {
     /// plus however many doublings its display size is above 256 dp, less the
     /// one that 512 already carries.
     fn style_zoom(&self, z: u8) -> f64 {
-        z as f64 + (self.display_tile_size as f64 / DEFAULT_TILE_SIZE as f64).log2()
+        z as f64 + (self.effective_display_tile_size() / DEFAULT_TILE_SIZE as f64).log2()
     }
 
     /// Style units to pixels, for a render asked for at `tile_size` pixels.
     fn paint_scale(&self, tile_size: u32) -> f32 {
-        tile_size as f32 / self.display_tile_size as f32
+        tile_size as f32 / self.effective_display_tile_size() as f32
     }
 
     /// The style's `glyphs` URL template, if it has one.
@@ -558,11 +573,8 @@ impl Renderer {
     /// was given.
     fn source_zoom_offset(&self) -> u8 {
         let levels = (DEFAULT_TILE_SIZE as f64 / self.display_tile_size as f64).log2();
-        if levels <= 0.0 {
-            0
-        } else {
-            levels.round() as u8
-        }
+        let base = if levels <= 0.0 { 0 } else { levels.round() as u8 };
+        base.saturating_add(EXTRA_SOURCE_ZOOM_OFFSET.with(|current| current.get()))
     }
 
     /// Draws the whole source tile that `z/x/y` reads from, at the resolution
@@ -622,7 +634,7 @@ impl Renderer {
             &self.style,
             self.style_zoom(z),
             out_size,
-            self.display_tile_size as f32 * tiles_across as f32,
+            self.effective_display_tile_size() as f32 * tiles_across as f32,
             &decoded,
             &store,
             sprites.as_ref(),
@@ -720,7 +732,10 @@ impl Renderer {
             // Decoded once per source tile, not once per child of it: the
             // same cache the CPU path reads.
             let key = (request.source_id.clone(), request.z, request.x, request.y);
-            let Some(tile) = self.source_tiles.get_or_decode(key, || mvt::decode(bytes).ok()) else {
+            let Some(tile) = self
+                .source_tiles
+                .get_or_decode(key, || mvt::decode(bytes).ok())
+            else {
                 continue;
             };
             decoded.push((request, tile));
@@ -746,7 +761,7 @@ impl Renderer {
                 &self.style,
                 self.style_zoom(z),
                 tile_size,
-                self.display_tile_size as f32,
+                self.effective_display_tile_size() as f32,
                 &views,
             )
         };
@@ -799,6 +814,7 @@ impl Renderer {
                 request.y,
                 z,
                 tile_size,
+                EXTRA_SOURCE_ZOOM_OFFSET.with(|current| current.get()),
             );
             let whole = match self.cached_tessellation(&key) {
                 Some(whole) => whole,
@@ -814,7 +830,7 @@ impl Renderer {
                         &self.style,
                         zoom,
                         tile_size,
-                        self.display_tile_size as f32,
+                        self.effective_display_tile_size() as f32,
                         std::slice::from_ref(&view),
                         false,
                     ));
@@ -963,7 +979,7 @@ impl Renderer {
             &self.style,
             self.style_zoom(z),
             tile_size,
-            self.display_tile_size as f32,
+            self.effective_display_tile_size() as f32,
             &decoded,
             store_ref,
             sprites_ref,
@@ -1003,7 +1019,7 @@ impl Renderer {
         );
         symbol::place(labels)
             .into_iter()
-            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .filter(|label| symbol::touches_tile(label.ink_bounds, tile_size))
             .collect::<Vec<_>>()
             .iter()
             .map(|label| label.paint.size)
@@ -1044,7 +1060,7 @@ impl Renderer {
         );
         symbol::place(labels)
             .into_iter()
-            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .filter(|label| symbol::touches_tile(label.ink_bounds, tile_size))
             .collect::<Vec<_>>()
             .into_iter()
             .map(|label| (label.content, label.bounds, label.sort_key))
@@ -1107,7 +1123,7 @@ impl Renderer {
         );
         let placed = symbol::place(labels)
             .into_iter()
-            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .filter(|label| symbol::touches_tile(label.ink_bounds, tile_size))
             .collect::<Vec<_>>();
         let collect_ms = t1.ms();
         if placed.is_empty() {
@@ -1181,7 +1197,7 @@ impl Renderer {
         );
         let placed = symbol::place(labels)
             .into_iter()
-            .filter(|label| symbol::touches_tile(label.bounds, tile_size))
+            .filter(|label| symbol::touches_tile(label.ink_bounds, tile_size))
             .collect::<Vec<_>>();
         if placed.is_empty() {
             return Ok((Vec::new(), 0));
@@ -1278,7 +1294,10 @@ impl Renderer {
                 continue;
             }
             let key = (request.source_id.clone(), request.z, request.x, request.y);
-            let Some(tile) = self.source_tiles.get_or_decode(key, || mvt::decode(bytes).ok()) else {
+            let Some(tile) = self
+                .source_tiles
+                .get_or_decode(key, || mvt::decode(bytes).ok())
+            else {
                 continue;
             };
             for layer in &tile.layers {
@@ -1393,7 +1412,10 @@ impl Renderer {
                 // ArcGIS's 3D view asks for around 120 tiles to fill an iPad,
                 // and they come from a handful of ancestors.
                 let key = (request.source_id.clone(), request.z, request.x, request.y);
-                let Some(tile) = self.source_tiles.get_or_decode(key, || mvt::decode(bytes).ok()) else {
+                let Some(tile) = self
+                    .source_tiles
+                    .get_or_decode(key, || mvt::decode(bytes).ok())
+                else {
                     continue;
                 };
                 tile
@@ -1518,6 +1540,92 @@ mod tests {
         assert_eq!(request.scale, 2.0);
         assert_eq!(request.offset_x, 0.5);
         assert_eq!(request.offset_y, 0.0);
+    }
+
+    #[test]
+    fn source_detail_override_matches_parent_style_and_is_thread_local() {
+        let renderer = Renderer::new(r#"{"version":8,"sources":{},"layers":[]}"#)
+            .unwrap().with_display_tile_size(256);
+        let style_zoom = renderer.style_zoom(8);
+        let paint_scale = renderer.paint_scale(768);
+        let previous = set_thread_source_zoom_offset(1);
+        assert_eq!(renderer.source_zoom_offset(), 2);
+        assert_eq!(renderer.style_zoom(8), style_zoom - 1.0);
+        assert_eq!(renderer.paint_scale(768), paint_scale * 2.0);
+        std::thread::spawn(|| {
+            let other = Renderer::new(r#"{"version":8,"sources":{},"layers":[]}"#)
+                .unwrap().with_display_tile_size(256);
+            assert_eq!(other.source_zoom_offset(), 1);
+        }).join().unwrap();
+        assert_eq!(set_thread_source_zoom_offset(previous), 1);
+        assert_eq!(renderer.source_zoom_offset(), 1);
+        assert_eq!(renderer.style_zoom(8), style_zoom);
+        assert_eq!(renderer.paint_scale(768), paint_scale);
+    }
+
+    #[test]
+    fn rounded_target_is_a_crop_of_the_canonical_vector_tile() {
+        let style = r##"{"version":8,"sources":{"s":{"type":"vector","tiles":["https://tiles.test/{z}/{x}/{y}"]}},
+            "layers":[{"id":"road","type":"line","source":"s","source-layer":"roads",
+            "maxzoom":6.5,"paint":{"line-color":"#ff0000","line-width":["interpolate",["linear"],["zoom"],6,4,7,20]}}]}"##;
+        let bytes = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name: "roads".into(), extent: 4096,
+            features: vec![fixtures::FeatureSpec {
+                geom: fixtures::Geom::Line,
+                points: vec![(0, 512), (4096, 512)], props: vec![],
+            }],
+        }]);
+        let reference = Renderer::new(style).unwrap();
+        let (parent, _) = reference.render_pixmap(6, 0, 0, 1024, &[Some(&bytes)]).unwrap();
+        let target = Renderer::new(style).unwrap().with_display_tile_size(256);
+        let previous = set_thread_source_zoom_offset(1);
+        let child = target.render_pixmap(8, 0, 0, 256, &[Some(&bytes)]).unwrap().0;
+        set_thread_source_zoom_offset(previous);
+        let expected = parent.clone_rect(tiny_skia::IntRect::from_xywh(0, 0, 256, 256).unwrap()).unwrap();
+        assert!(expected.pixels().iter().any(|p| p.alpha() > 0));
+        assert_eq!(child.data(), expected.data(), "style visibility and line size must match the parent crop");
+        #[cfg(feature = "tessellate")]
+        {
+            let previous = set_thread_source_zoom_offset(1);
+            let packed = target.tessellate_packed(8, 0, 0, 256, &[Some(&bytes)]).unwrap();
+            set_thread_source_zoom_offset(previous);
+            let vertices = &packed[13 + packed[6] as usize * 2..];
+            assert!(!vertices.is_empty());
+            let ys: Vec<_> = vertices.chunks_exact(tessellate::VERTEX_STRIDE).map(|v| v[1]).collect();
+            let low = ys.iter().copied().fold(f32::INFINITY, f32::min);
+            let high = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            assert!(((high - low) * 256.0 / packed[0] - 8.0).abs() < 0.01,
+                "GPU line width must match the CPU parent's eight pixels");
+        }
+    }
+
+    #[test]
+    fn rounded_target_labels_match_the_parent_crop() {
+        let style = serde_json::json!({
+            "version":8, "glyphs":"https://tiles.test/{fontstack}/{range}.pbf",
+            "sources":{"s":{"type":"vector","tiles":["https://tiles.test/{z}/{x}/{y}"]}},
+            "layers":[{"id":"label","type":"symbol","source":"s","source-layer":"place", "maxzoom":6.5,
+                "layout":{"text-field":"{name}","text-font":["F"],
+                    "text-size":["interpolate",["linear"],["zoom"],6,20,7,40]}}]
+        }).to_string();
+        let bytes = fixtures::encode_tile(&[fixtures::LayerSpec {
+            name:"place".into(), extent:4096,
+            features:vec![fixtures::FeatureSpec {
+                geom:fixtures::Geom::Point,points:vec![(512,512)],props:vec![("name".into(),"A".into())],
+            }],
+        }]);
+        let reference = Renderer::new(&style).unwrap();
+        let target = Renderer::new(&style).unwrap().with_display_tile_size(256);
+        let glyphs = glyph_pbf("F", &[0x41]);
+        reference.add_glyphs(&glyphs).unwrap();
+        target.add_glyphs(&glyphs).unwrap();
+        let (parent, count) = reference.render_labels_rgba(6, 0, 0, 1024, &[Some(&bytes)]).unwrap();
+        assert!(count > 0);
+        let previous = set_thread_source_zoom_offset(1);
+        let child = target.render_labels_rgba(8, 0, 0, 256, &[Some(&bytes)]).unwrap().0;
+        set_thread_source_zoom_offset(previous);
+        let expected: Vec<u8> = (0..256).flat_map(|row| parent[row * 1024 * 4..row * 1024 * 4 + 256 * 4].iter().copied()).collect();
+        assert_eq!(child, expected, "glyph sizes and placement must match the parent crop");
     }
 
     /// A label still lands when the tile is drawn from its parent's data.
