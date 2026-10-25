@@ -70,7 +70,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # `node --test "test/*.test.mjs"` は Node 21 からグロブを展開する。
+          # 20 ではパターンをそのままファイル名として探し、見つからずに落ちる。
+          node-version: 22
 
       - name: Cache cargo
         uses: actions/cache@v5
