@@ -7,7 +7,7 @@ description = "C ABI bindings for mvt-style, for MapConductorVectorStyle"
 
 [lib]
 name = "mvt_style_ffi"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["staticlib"]
 
 [dependencies]
 mvt-style = { path = "../mvt-style" }
