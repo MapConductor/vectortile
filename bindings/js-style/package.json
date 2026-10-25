@@ -1,6 +1,6 @@
 {
   "name": "@mapconductor/vectorstyle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Declarative adjustments to a MapLibre style, applied the same way on every renderer",
   "type": "module",
   "main": "./dist/index.js",
