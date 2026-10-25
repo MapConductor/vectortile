@@ -1,0 +1,233 @@
+name: Release
+
+# 3 つの SDK が使うネイティブ成果物を、ここで 1 回だけビルドして GitHub Releases に置く。
+# これまでは scripts/sync-sdk.sh が手元のビルドを各 SDK へコピーしていたため、
+#   - 何から作ったバイナリなのかが記録に残らない
+#   - SDK 側は git にバイナリを抱える（react-sdk は dist が管理外で、clone 直後にビルドできない）
+# という状態だった。SDK はここのタグとチェックサムを指定して取りに来る。
+#
+# v* のタグを push するとリリースを作る。pull_request ではビルドと梱包までを行い、
+# 公開はしない（このファイルやビルドスクリプトを変えたときに、タグを打つ前に壊れていないか分かる）。
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build-*.sh
+      - scripts/package-release.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # タグ・Cargo・2 つの npm パッケージのバージョンが揃っていないと、SDK 側が
+  # 「v0.2.0 を取ったのに中身は 0.1.0」になる。ビルドより先に落とす。
+  version:
+    runs-on: ubuntu-latest
+    name: Check versions
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Compare
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          web=$(node -p 'require("./bindings/js/package.json").version')
+          style=$(node -p 'require("./bindings/js-style/package.json").version')
+          echo "Cargo $cargo / bindings/js $web / bindings/js-style $style"
+          [[ "$cargo" == "$web" && "$cargo" == "$style" ]] || { echo "::error::versions differ"; exit 1; }
+          if [[ "$REF_TYPE" == "tag" && "$REF_NAME" != "v$cargo" ]]; then
+            echo "::error::tag $REF_NAME does not match version $cargo"
+            exit 1
+          fi
+
+  web:
+    needs: version
+    runs-on: ubuntu-latest
+    name: Web (wasm)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-wasm-${{ runner.os }}-
+
+      # test.yml と同じく cargo で入れる。
+      - name: Install wasm-pack
+        run: command -v wasm-pack || cargo install wasm-pack --locked
+
+      - name: Build bindings/js
+        working-directory: bindings/js
+        run: npm ci && npm run build
+
+      - name: Build bindings/js-style
+        working-directory: bindings/js-style
+        run: npm ci && npm run build
+
+      - name: Package
+        run: scripts/package-release.sh web out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: out/
+          if-no-files-found: error
+
+  ios:
+    needs: version
+    runs-on: macos-latest
+    name: iOS (xcframework)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ios-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-ios-${{ runner.os }}-
+
+      - name: Build
+        run: |
+          scripts/build-ios.sh
+          scripts/build-ios-style.sh
+          scripts/build-ios-core-png.sh
+
+      - name: Package
+        run: scripts/package-release.sh ios out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios
+          path: out/
+          if-no-files-found: error
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    name: Android (jniLibs)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-android-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-android-${{ runner.os }}-
+
+      # ビルドスクリプトは $ANDROID_HOME/ndk/ の一番新しい NDK を使う。
+      # ランナーには NDK が入っているので、追加のセットアップは要らない。
+      - name: Build
+        run: |
+          ls "$ANDROID_HOME/ndk"
+          scripts/build-android.sh
+          scripts/build-android-style.sh
+          scripts/build-android-core-png.sh
+
+      - name: Package
+        run: scripts/package-release.sh android out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: out/
+          if-no-files-found: error
+
+  release:
+    needs: [web, ios, android]
+    runs-on: macos-latest
+    name: Publish
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      # SDK 側はこの SHA256SUMS で取ってきたものを検証する。SwiftPM の
+      # binaryTarget(url:checksum:) が求めるのも同じ SHA-256。
+      - name: Checksums
+        working-directory: out
+        run: |
+          # toolchain-*.txt は各ビルドジョブが書いたメモ。リリースノートにだけ使う。
+          cat toolchain-*.txt > ../toolchain.txt
+          rm toolchain-*.txt
+          shasum -a 256 * | tee SHA256SUMS
+          {
+            echo "Built from ${GITHUB_SHA}."
+            echo
+            echo '```'
+            cat ../toolchain.txt
+            echo '```'
+            echo
+            echo "## SHA-256"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > ../notes.md
+
+      - name: Create release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" out/* --title "$TAG" --notes-file notes.md --verify-tag
+
+      - name: Show what would be released
+        if: github.ref_type != 'tag'
+        run: |
+          ls -l out
+          cat notes.md
