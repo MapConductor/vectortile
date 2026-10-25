@@ -1,7 +1,30 @@
 //! Byte-budgeted LRU for expensive native tile data.
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+/// When an entry was last used.
+///
+/// `std::time::Instant::now()` panics on `wasm32-unknown-unknown` (see
+/// `clock.rs`). There the clock reads as one fixed moment, so nothing is ever
+/// idle long enough to expire and the cache evicts by count and bytes alone.
+#[cfg(not(target_arch = "wasm32"))]
+type Instant = std::time::Instant;
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Debug, Clone, Copy)]
+struct Instant;
+
+#[cfg(target_arch = "wasm32")]
+impl Instant {
+    fn now() -> Instant {
+        Instant
+    }
+
+    fn duration_since(&self, _earlier: Instant) -> Duration {
+        Duration::ZERO
+    }
+}
 
 #[derive(Debug)]
 struct Entry<V> {
