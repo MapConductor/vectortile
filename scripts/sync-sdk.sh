@@ -60,37 +60,24 @@ sync_ios() {
 }
 
 sync_web() {
-    # The framework-neutral package. React is one 120-line component on top of
-    # this, and nothing here knows about it — the provider talks to a host tile
-    # server through the structural TileServerLike interface, so the same build
-    # serves React, Vue, or plain script tags.
-    local dest="$sdks/react-sdk/vectortile"
-    [[ -d "$dest" ]] || { echo "skip web: $dest not found"; return; }
-    rm -rf "$dest/pkg" "$dest/dist"
-    cp -R "$root/bindings/js/pkg" "$dest/pkg"
-    cp -R "$root/bindings/js/dist" "$dest/dist"
-    cp "$root/bindings/js/README.md" "$dest/README.md" 2>/dev/null || true
+    # Into react-vectortile's vendor/, where scripts/fetch-vector-assets.mjs
+    # otherwise unpacks the pinned release. The stamp says this is a local
+    # build, so the next plain fetch puts the release back.
+    web_vendor bindings/js "$sdks/react-sdk/react-vectortile/vendor/vectortile" README.md
+}
+
+web_vendor() {
+    local src="$root/$1" dest="$2"
+    shift 2
+    local package="${dest%/vendor/*}"
+    [[ -d "$package" ]] || { echo "skip web: $package not found"; return; }
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    cp -R "$src/pkg" "$src/dist" "$src/package.json" "$dest/"
+    for extra in "$@"; do cp "$src/$extra" "$dest/" 2>/dev/null || true; done
     # wasm-pack writes a `.gitignore` containing `*` into its output directory.
-    # Copied verbatim it makes the vendored wasm untrackable, which is how the
-    # package ends up unbuildable from a clean checkout.
     rm -f "$dest/pkg/.gitignore"
-
-    # The version, and only the version. The copy's `package.json` is not this
-    # one: its scripts say the build lives here rather than there, which is the
-    # whole point of it being a copy. But the version has been hand-maintained
-    # on both sides, so the vendored renderer could silently stop being the one
-    # its version claims — and the React binding pins a range against it.
-    node -e '
-        const fs = require("fs");
-        const [from, to] = process.argv.slice(1);
-        const version = JSON.parse(fs.readFileSync(from, "utf8")).version;
-        const target = JSON.parse(fs.readFileSync(to, "utf8"));
-        if (target.version === version) process.exit(0);
-        target.version = version;
-        fs.writeFileSync(to, JSON.stringify(target, null, 2) + "\n");
-        console.error(`        version -> ${version}`);
-    ' "$root/bindings/js/package.json" "$dest/package.json"
-
+    echo "local $src" > "$dest/.release"
     echo "web     -> $dest"
 }
 
@@ -118,16 +105,7 @@ sync_ios_style() {
 }
 
 sync_web_style() {
-    local dest="$sdks/react-sdk/vectorstyle"
-    [[ -d "$dest" ]] || { echo "skip web style: $dest not found"; return; }
-    rm -rf "$dest/pkg" "$dest/dist"
-    cp -R "$root/bindings/js-style/pkg" "$dest/pkg"
-    cp -R "$root/bindings/js-style/dist" "$dest/dist"
-    # wasm-pack writes a `.gitignore` containing `*` into its output
-    # directory. Copied verbatim it makes the vendored wasm untrackable,
-    # which is how the package ends up unbuildable from a clean checkout.
-    rm -f "$dest/pkg/.gitignore"
-    echo "web style -> $dest"
+    web_vendor bindings/js-style "$sdks/react-sdk/react-vectorstyle/vendor/vectorstyle"
 }
 
 
