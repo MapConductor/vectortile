@@ -157,6 +157,54 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// Every operator [`eval`] handles.
+///
+/// Kept beside the match it describes, and checked against `mvt-style`'s
+/// copy by a test: that crate tells apps at compile time which expressions
+/// will not survive the raster path, and a list that drifts from this one
+/// turns that promise into a lie in whichever direction it drifted.
+pub const HANDLED_OPS: &[&str] = &[
+    "literal",
+    "get",
+    "has",
+    "geometry-type",
+    "id",
+    "zoom",
+    "interpolate",
+    "interpolate-hcl",
+    "interpolate-lab",
+    "step",
+    "match",
+    "case",
+    "coalesce",
+    "==",
+    "!=",
+    "<",
+    ">",
+    "<=",
+    ">=",
+    "all",
+    "any",
+    "none",
+    "!",
+    "in",
+    "!in",
+    "!has",
+    "to-number",
+    "to-boolean",
+    "to-string",
+    "concat",
+    "rgb",
+    "rgba",
+    "+",
+    "-",
+    "*",
+    "/",
+    "%",
+    "min",
+    "max",
+];
+
 /// Evaluates an expression, a legacy function object, or a literal.
 pub fn eval(json: &Json, ctx: &Ctx) -> Val {
     match json {
@@ -735,5 +783,35 @@ mod tests {
         assert!(!Val::Str(String::new()).truthy());
         assert!(Val::Num(0.1).truthy());
         assert!(Val::Str("x".into()).truthy());
+    }
+}
+
+#[cfg(test)]
+mod shared_with_mvt_style {
+    /// `mvt-style` warns an app when a rule uses an expression this renderer
+    /// cannot evaluate. Its list is a copy of [`super::HANDLED_OPS`] plus the
+    /// interpolation types, which are arguments to `interpolate` rather than
+    /// operators in their own right.
+    #[test]
+    fn the_two_lists_of_operators_agree() {
+        let here: std::collections::BTreeSet<&str> = super::HANDLED_OPS.iter().copied().collect();
+        let there: std::collections::BTreeSet<&str> =
+            mvt_style::RASTER_SUPPORTED_OPS.iter().copied().collect();
+        let interpolation: std::collections::BTreeSet<&str> =
+            ["linear", "exponential", "cubic-bezier"]
+                .into_iter()
+                .collect();
+
+        let missing: Vec<&&str> = here.difference(&there).collect();
+        assert!(
+            missing.is_empty(),
+            "mvt-style will warn about operators this renderer does handle: {missing:?}"
+        );
+        let extra: Vec<&str> = there.difference(&here).copied().collect();
+        let extra: std::collections::BTreeSet<&str> = extra.into_iter().collect();
+        assert_eq!(
+            extra, interpolation,
+            "mvt-style promises operators this renderer does not handle"
+        );
     }
 }

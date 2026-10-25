@@ -17,7 +17,12 @@ use crate::symbol;
 use crate::text::GlyphStore;
 
 /// The reference tile size the style spec's pixel units are defined against.
-const REFERENCE_TILE_SIZE: f32 = 512.0;
+/// dp of screen one tile covers, when the caller has not said otherwise.
+///
+/// Style dimensions are screen units, so turning them into pixels needs both
+/// the pixel count asked for and the size the tile will be shown at. 512 is
+/// the usual answer -- see `Renderer::display_tile_size`.
+pub const REFERENCE_TILE_SIZE: f32 = 512.0;
 
 /// A source tile that has been fetched and decoded, ready to draw.
 pub struct DecodedTile {
@@ -46,12 +51,14 @@ pub fn render(
     style: &Style,
     zoom: f64,
     tile_size: u32,
+    display_tile_size: f32,
     decoded: &[DecodedTile],
 ) -> Option<(Pixmap, RenderStats)> {
     render_with_glyphs(
         style,
         zoom,
         tile_size,
+        display_tile_size,
         decoded,
         &GlyphStore::new(),
         None,
@@ -101,13 +108,15 @@ pub fn render_with_glyphs(
     style: &Style,
     zoom: f64,
     tile_size: u32,
+    // dp the tile covers on screen; REFERENCE_TILE_SIZE when unknown.
+    display_tile_size: f32,
     decoded: &[DecodedTile],
     glyphs: &GlyphStore,
     sprites: Option<&crate::sprite::SpriteSheet>,
     tile_xy: (u32, u32),
 ) -> Option<(Pixmap, RenderStats)> {
     let mut pixmap = Pixmap::new(tile_size, tile_size)?;
-    let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
+    let paint_scale = tile_size as f32 / display_tile_size.max(1.0);
     let mut stats = RenderStats {
         layers_drawn: 0,
         features_drawn: 0,
@@ -177,7 +186,12 @@ pub fn render_with_glyphs(
         );
         // Two pixels of padding: labels that only just clear each other read
         // as one smear at small sizes.
-        let placed = symbol::place(labels);
+        // Placement ran over a tile of margin so that neighbouring tiles agree;
+        // only what reaches this tile is drawn.
+        let placed: Vec<_> = symbol::place(labels)
+            .into_iter()
+            .filter(|label| symbol::touches_tile(label.ink_bounds, tile_size))
+            .collect();
         if !placed.is_empty() {
             stats.layers_drawn += 1;
             stats.features_drawn += placed.len();
@@ -193,12 +207,35 @@ pub fn render_with_glyphs(
 /// The part of an overzoomed parent this tile shows, in the parent's units,
 /// with an eighth of the window as margin. `None` when the tile is its own.
 pub(crate) fn overzoom_window(decoded: &DecodedTile, extent: u32) -> Option<[f32; 4]> {
+    window_with_margin(decoded, extent, 0.125)
+}
+
+/// As [`overzoom_window`], but a whole tile of margin on every side.
+///
+/// Labels need it. A tile does not decide on its own which of them to draw: it
+/// runs a collision contest, and a label that straddles a seam is drawn half by
+/// each neighbour, so the two must reach the same verdict. They only do that if
+/// they judge it against the same rivals -- which means each tile has to see a
+/// whole tile beyond its own edge, exactly what the ring of neighbours gives an
+/// unmagnified tile.
+///
+/// An eighth of a tile was not enough and the difference was visible: 中野区
+/// sits 19 px east of the seam and 高円寺 40 px west of it. The east tile could
+/// not see 高円寺, so it drew 中野区; the west tile saw both, gave the spot to
+/// 高円寺, and drew nothing -- leaving 中野区 sliced down the middle at the
+/// seam. Nothing was wrong at 512 dp because nothing was magnified there and
+/// the window did not exist at all.
+pub(crate) fn label_window(decoded: &DecodedTile, extent: u32) -> Option<[f32; 4]> {
+    window_with_margin(decoded, extent, 1.0)
+}
+
+fn window_with_margin(decoded: &DecodedTile, extent: u32, margin_spans: f32) -> Option<[f32; 4]> {
     if decoded.scale <= 1.0 {
         return None;
     }
     let extent = extent as f32;
     let span = extent / decoded.scale;
-    let margin = span / 8.0;
+    let margin = span * margin_spans;
     Some([
         decoded.offset_x * extent - margin,
         decoded.offset_y * extent - margin,
@@ -231,7 +268,23 @@ fn draw_background(pixmap: &mut Pixmap, layer: &Layer, zoom: f64) {
     if color.a <= 0.0 {
         return;
     }
-    pixmap.fill(color.to_tiny_skia());
+    if color.a >= 1.0 {
+        pixmap.fill(color.to_tiny_skia());
+        return;
+    }
+    // Painted over what is already there rather than replacing it. A style may
+    // have more than one background layer -- the tessellator's copy of this
+    // says what real styles do with them -- and `fill` would drop whatever the
+    // ones below it put down.
+    let Some(rect) =
+        tiny_skia::Rect::from_xywh(0.0, 0.0, pixmap.width() as f32, pixmap.height() as f32)
+    else {
+        return;
+    };
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(color.to_tiny_skia());
+    paint.blend_mode = tiny_skia::BlendMode::SourceOver;
+    pixmap.fill_rect(rect, &paint, tiny_skia::Transform::identity(), None);
 }
 
 fn draw_data_layer(

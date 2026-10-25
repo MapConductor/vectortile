@@ -74,12 +74,68 @@ sync_web() {
     # Copied verbatim it makes the vendored wasm untrackable, which is how the
     # package ends up unbuildable from a clean checkout.
     rm -f "$dest/pkg/.gitignore"
+
+    # The version, and only the version. The copy's `package.json` is not this
+    # one: its scripts say the build lives here rather than there, which is the
+    # whole point of it being a copy. But the version has been hand-maintained
+    # on both sides, so the vendored renderer could silently stop being the one
+    # its version claims — and the React binding pins a range against it.
+    node -e '
+        const fs = require("fs");
+        const [from, to] = process.argv.slice(1);
+        const version = JSON.parse(fs.readFileSync(from, "utf8")).version;
+        const target = JSON.parse(fs.readFileSync(to, "utf8"));
+        if (target.version === version) process.exit(0);
+        target.version = version;
+        fs.writeFileSync(to, JSON.stringify(target, null, 2) + "\n");
+        console.error(`        version -> ${version}`);
+    ' "$root/bindings/js/package.json" "$dest/package.json"
+
     echo "web     -> $dest"
+}
+
+sync_android_style() {
+    # The style compiler, which is its own module: an app using MapLibre,
+    # Mapbox or MapTiler adjusts a style without linking the rasteriser.
+    local dest="$sdks/android-sdk/android-vectorstyle"
+    [[ -d "$dest" ]] || { echo "skip android style: $dest not found"; return; }
+    local src="$root/bindings/android/style"
+    mkdir -p "$dest/src/main/java/com/mapconductor/vectorstyle" "$dest/src/main/jniLibs"
+    cp "$src/java/com/mapconductor/vectorstyle/NativeStyleCompiler.kt" \
+       "$dest/src/main/java/com/mapconductor/vectorstyle/"
+    cp -R "$src/jniLibs/." "$dest/src/main/jniLibs/"
+    echo "android style -> $dest"
+}
+
+sync_ios_style() {
+    local dest="$sdks/ios-sdk/ios-vectorstyle"
+    [[ -d "$dest" ]] || { echo "skip ios style: $dest not found"; return; }
+    rm -rf "$dest/MvtStyle.xcframework"
+    cp -R "$root/bindings/ios-style/MvtStyle.xcframework" "$dest/"
+    mkdir -p "$dest/Sources/CMvtStyle/include"
+    cp "$root/bindings/ios-style/include/mvt_style.h" "$dest/Sources/CMvtStyle/include/"
+    echo "ios style -> $dest"
+}
+
+sync_web_style() {
+    local dest="$sdks/react-sdk/vectorstyle"
+    [[ -d "$dest" ]] || { echo "skip web style: $dest not found"; return; }
+    rm -rf "$dest/pkg" "$dest/dist"
+    cp -R "$root/bindings/js-style/pkg" "$dest/pkg"
+    cp -R "$root/bindings/js-style/dist" "$dest/dist"
+    # wasm-pack writes a `.gitignore` containing `*` into its output
+    # directory. Copied verbatim it makes the vendored wasm untrackable,
+    # which is how the package ends up unbuildable from a clean checkout.
+    rm -f "$dest/pkg/.gitignore"
+    echo "web style -> $dest"
 }
 
 
 sync_android
 sync_android_core
+sync_android_style
 sync_ios_core
 sync_ios
+sync_ios_style
 sync_web
+sync_web_style

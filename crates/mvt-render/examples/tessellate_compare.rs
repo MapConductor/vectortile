@@ -54,7 +54,7 @@ fn main() {
         offset_x: 0.0,
         offset_y: 0.0,
     }];
-    let tess = tessellate(&style, z as f64, size, &decoded);
+    let tess = tessellate(&style, z as f64, size, size as f32, &decoded);
 
     let mut candidate = Pixmap::new(size, size).unwrap();
     if let Some(bg) = tess.background {

@@ -2,6 +2,10 @@
 resolver = "2"
 members = [
     "crates/mvt-render",
+    "crates/mvt-style",
+    "crates/mvt-style-jni",
+    "crates/mvt-style-ffi",
+    "crates/mvt-style-wasm",
     "crates/tile-png",
     "crates/tile-png-jni",
     "crates/tile-png-ffi",
@@ -47,4 +51,11 @@ opt-level = 3
 opt-level = 3
 
 [profile.release.package.miniz_oxide]
+opt-level = 3
+
+# Android renders on the device's critical path. Keep the size-first release
+# profile for other consumers, but optimize native Android rendering for speed.
+# Pixel 5a measurements and reproduction steps: docs/android-performance.md.
+[profile.android-release]
+inherits = "release"
 opt-level = 3

@@ -1,0 +1,889 @@
+{
+  "affects": "both",
+  "patchable": true,
+  "diagnostics": [
+    "schema: shortbread (280 layers)",
+    "rule 1 matched 280 layers",
+    "rule 2 matched 48 layers",
+    "roles found: road=184 road-casing=77 label=48 land=17 poi=9 landuse=7 transit=7 boundary=6 water=6 background=5 waterway=5 building=2"
+  ],
+  "addedLayers": [],
+  "changedLayers": {
+    "aerialway": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "aerialway:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "airport-area": [
+      "setPaint fill-color=\"#000000\""
+    ],
+    "airport-runway": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "airport-runway:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "airport-taxiway": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "airport-taxiway:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "background": [
+      "setPaint background-color=\"#0f0b07\""
+    ],
+    "boundary-country": [
+      "setPaint line-color=\"#373759\""
+    ],
+    "boundary-country-disputed": [
+      "setPaint line-color=\"#323043\""
+    ],
+    "boundary-country-maritime": [
+      "setPaint line-color=\"#142d46\""
+    ],
+    "boundary-country:outline": [
+      "setPaint line-color=\"#0f0b07\""
+    ],
+    "boundary-state": [
+      "setPaint line-color=\"#373759\""
+    ],
+    "boundary-state:outline": [
+      "setPaint line-color=\"#0f0b07\""
+    ],
+    "bridge": [
+      "setPaint fill-color=\"#14100c\""
+    ],
+    "bridge-street-arterial-link": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "bridge-street-arterial-link:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-arterial-link:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "bridge-street-bus": [
+      "setPaint line-color=\"#080808\""
+    ],
+    "bridge-street-bus:outline": [
+      "setPaint line-color=\"#252422\""
+    ],
+    "bridge-street-livingstreet": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "bridge-street-livingstreet:outline": [
+      "setPaint line-color=\"#262626\""
+    ],
+    "bridge-street-minor": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "bridge-street-minor-bicycle": [
+      "setPaint line-color=\"#000a10\""
+    ],
+    "bridge-street-minor:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-minor:outline": [
+      "setPaint line-color=\"#262626\""
+    ],
+    "bridge-street-motorway": [
+      "setPaint line-color=\"#774400\""
+    ],
+    "bridge-street-motorway-link": [
+      "setPaint line-color=\"#774400\""
+    ],
+    "bridge-street-motorway-link:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-motorway-link:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "bridge-street-motorway:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-motorway:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "bridge-street-pedestrian": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "bridge-street-pedestrian-bicycle": [
+      "setPaint line-color=\"#000a10\""
+    ],
+    "bridge-street-pedestrian-zone": [
+      "setPaint fill-color=\"#000000\""
+    ],
+    "bridge-street-pedestrian:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-pedestrian:outline": [
+      "setPaint line-color=\"#262626\""
+    ],
+    "bridge-street-primary": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "bridge-street-primary:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-primary:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "bridge-street-secondary": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "bridge-street-secondary:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-secondary:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "bridge-street-service": [
+      "setPaint line-color=\"#080808\""
+    ],
+    "bridge-street-service:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-service:outline": [
+      "setPaint line-color=\"#252422\""
+    ],
+    "bridge-street-tertiary": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "bridge-street-tertiary-link": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "bridge-street-tertiary-link:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-tertiary-link:outline": [
+      "setPaint line-color=\"#262626\""
+    ],
+    "bridge-street-tertiary:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-tertiary:outline": [
+      "setPaint line-color=\"#262626\""
+    ],
+    "bridge-street-track": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "bridge-street-track:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-track:outline": [
+      "setPaint line-color=\"#262626\""
+    ],
+    "bridge-street-trunk": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "bridge-street-trunk-link": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "bridge-street-trunk-link:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-trunk-link:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "bridge-street-trunk:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-street-trunk:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "bridge-transport-lightrail": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "bridge-transport-lightrail-service": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "bridge-transport-lightrail-service:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "bridge-transport-lightrail:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "bridge-transport-minorrail": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "bridge-transport-minorrail:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "bridge-transport-rail": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "bridge-transport-rail-service": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "bridge-transport-rail-service:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "bridge-transport-rail:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "bridge-transport-subway": [
+      "setPaint line-color=\"#27333e\""
+    ],
+    "bridge-transport-subway:outline": [
+      "setPaint line-color=\"#384a59\""
+    ],
+    "bridge-way-cycleway": [
+      "setPaint line-color=\"#000a10\""
+    ],
+    "bridge-way-cycleway:outline": [
+      "setPaint line-color=\"#192228\""
+    ],
+    "bridge-way-footway": [
+      "setPaint line-color=\"#100014\""
+    ],
+    "bridge-way-footway:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-way-footway:outline": [
+      "setPaint line-color=\"#27192b\""
+    ],
+    "bridge-way-path": [
+      "setPaint line-color=\"#100014\""
+    ],
+    "bridge-way-path:outline": [
+      "setPaint line-color=\"#27192b\""
+    ],
+    "bridge-way-paths:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-way-steps": [
+      "setPaint line-color=\"#100014\""
+    ],
+    "bridge-way-steps:bridge": [
+      "setPaint line-color=\"#14100c\""
+    ],
+    "bridge-way-steps:outline": [
+      "setPaint line-color=\"#27192b\""
+    ],
+    "building": [
+      "setPaint fill-color=\"#1d150d\""
+    ],
+    "building:outline": [
+      "setPaint fill-color=\"#282420\""
+    ],
+    "label-address-housenumber": [
+      "setPaint text-color=\"rgba(13,11,9,0.302)\"",
+      "setPaint icon-color=\"rgba(13,11,9,0.302)\""
+    ],
+    "label-boundary-country-large": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-boundary-country-medium": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-boundary-country-small": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-boundary-state": [
+      "setPaint text-color=\"#414149\"",
+      "setPaint icon-color=\"#414149\""
+    ],
+    "label-motorway-exit": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-motorway-shield": [
+      "setPaint text-color=\"#ffffff\"",
+      "setPaint icon-color=\"#ffffff\""
+    ],
+    "label-place-capital": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-city": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-hamlet": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-neighbourhood": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-quarter": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-statecapital": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-suburb": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-town": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-place-village": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-livingstreet": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-pedestrian": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-pedestrian-zone": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-primary": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-residential": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-secondary": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-tertiary": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-track": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-trunk": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-street-unclassified": [
+      "setPaint text-color=\"#373740\"",
+      "setPaint icon-color=\"#373740\""
+    ],
+    "label-water-area-large": [
+      "setPaint text-color=\"#555b62\"",
+      "setPaint icon-color=\"#555b62\""
+    ],
+    "label-water-area-major": [
+      "setPaint text-color=\"#555b62\"",
+      "setPaint icon-color=\"#555b62\""
+    ],
+    "label-water-area-medium": [
+      "setPaint text-color=\"#555b62\"",
+      "setPaint icon-color=\"#555b62\""
+    ],
+    "label-water-area-small": [
+      "setPaint text-color=\"#555b62\"",
+      "setPaint icon-color=\"#555b62\""
+    ],
+    "label-water-river": [
+      "setPaint text-color=\"#555b62\"",
+      "setPaint icon-color=\"#555b62\""
+    ],
+    "label-water-stream": [
+      "setPaint text-color=\"#555b62\"",
+      "setPaint icon-color=\"#555b62\""
+    ],
+    "land-agriculture": [
+      "setPaint fill-color=\"#28310d\""
+    ],
+    "land-burial": [
+      "setPaint fill-color=\"#1e221b\""
+    ],
+    "land-commercial": [
+      "setPaint fill-color=\"#110708\""
+    ],
+    "land-forest": [
+      "setPaint fill-color=\"#2d471a\""
+    ],
+    "land-garden": [
+      "setPaint fill-color=\"#4a5626\""
+    ],
+    "land-glacier": [
+      "setPaint fill-color=\"#000000\""
+    ],
+    "land-grass": [
+      "setPaint fill-color=\"#283c1a\""
+    ],
+    "land-industrial": [
+      "setPaint fill-color=\"#1e1805\""
+    ],
+    "land-leisure": [
+      "setPaint fill-color=\"#1b2112\""
+    ],
+    "land-park": [
+      "setPaint fill-color=\"rgba(74,86,38,0.502)\""
+    ],
+    "land-residential": [
+      "setPaint fill-color=\"#120e0a\""
+    ],
+    "land-rock": [
+      "setPaint fill-color=\"#19190d\""
+    ],
+    "land-sand": [
+      "setPaint fill-color=\"#31310d\""
+    ],
+    "land-vegetation": [
+      "setPaint fill-color=\"#303811\""
+    ],
+    "land-waste": [
+      "setPaint fill-color=\"#423d24\""
+    ],
+    "land-wetland": [
+      "setPaint fill-color=\"#192c21\""
+    ],
+    "marking-oneway": [
+      "setPaint text-color=\"#000000\"",
+      "setPaint icon-color=\"#000000\""
+    ],
+    "marking-oneway-reverse": [
+      "setPaint text-color=\"#000000\"",
+      "setPaint icon-color=\"#000000\""
+    ],
+    "poi-amenity": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-emergency": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-highway": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-historic": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-leisure": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-man_made": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-office": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-shop": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "poi-tourism": [
+      "setPaint text-color=\"#666666\"",
+      "setPaint icon-color=\"#666666\""
+    ],
+    "site-construction": [
+      "setPaint fill-color=\"#565656\""
+    ],
+    "site-dangerarea": [
+      "setPaint fill-color=\"#ff0000\""
+    ],
+    "site-education": [
+      "setPaint fill-color=\"rgba(127,127,0,0.125)\""
+    ],
+    "site-hospital": [
+      "setPaint fill-color=\"rgba(153,0,0,0.102)\""
+    ],
+    "site-parking": [
+      "setPaint fill-color=\"#191614\""
+    ],
+    "site-prison": [
+      "setPaint fill-color=\"#0d020c\""
+    ],
+    "site-sportscentre": [
+      "setPaint fill-color=\"rgba(17,14,9,0.149)\""
+    ],
+    "street-arterial-link": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "street-arterial-link:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "street-bus": [
+      "setPaint line-color=\"#080808\""
+    ],
+    "street-bus:outline": [
+      "setPaint line-color=\"#252422\""
+    ],
+    "street-livingstreet": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "street-livingstreet:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "street-minor": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "street-minor-bicycle": [
+      "setPaint line-color=\"#000a10\""
+    ],
+    "street-minor:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "street-motorway": [
+      "setPaint line-color=\"#774400\""
+    ],
+    "street-motorway-link": [
+      "setPaint line-color=\"#774400\""
+    ],
+    "street-motorway-link:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "street-motorway:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "street-pedestrian": [
+      "setPaint line-color=\"#100014\""
+    ],
+    "street-pedestrian-bicycle": [
+      "setPaint line-color=\"#000a10\""
+    ],
+    "street-pedestrian-zone": [
+      "setPaint fill-color=\"#100014\""
+    ],
+    "street-pedestrian:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "street-primary": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "street-primary:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "street-secondary": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "street-secondary:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "street-service": [
+      "setPaint line-color=\"#080808\""
+    ],
+    "street-service:outline": [
+      "setPaint line-color=\"#252422\""
+    ],
+    "street-tertiary": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "street-tertiary-link": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "street-tertiary-link:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "street-tertiary:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "street-track": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "street-track:outline": [
+      "setPaint line-color=\"#353330\""
+    ],
+    "street-trunk": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "street-trunk-link": [
+      "setPaint line-color=\"#554400\""
+    ],
+    "street-trunk-link:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "street-trunk:outline": [
+      "setPaint line-color=\"#884b16\""
+    ],
+    "symbol-transit-airfield": [
+      "setPaint text-color=\"#666468\"",
+      "setPaint icon-color=\"#666468\""
+    ],
+    "symbol-transit-airport": [
+      "setPaint text-color=\"#666468\"",
+      "setPaint icon-color=\"#666468\""
+    ],
+    "symbol-transit-bus": [
+      "setPaint text-color=\"#666468\"",
+      "setPaint icon-color=\"#666468\""
+    ],
+    "symbol-transit-station": [
+      "setPaint text-color=\"#666468\"",
+      "setPaint icon-color=\"#666468\""
+    ],
+    "symbol-transit-tram": [
+      "setPaint text-color=\"#666468\"",
+      "setPaint icon-color=\"#666468\""
+    ],
+    "transport-ferry": [
+      "setPaint line-color=\"#4c6782\""
+    ],
+    "transport-lightrail": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "transport-lightrail-service": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "transport-lightrail-service:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "transport-lightrail:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "transport-minorrail": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "transport-minorrail:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "transport-rail": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "transport-rail-service": [
+      "setPaint line-color=\"#293037\""
+    ],
+    "transport-rail-service:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "transport-rail:outline": [
+      "setPaint line-color=\"#3b454e\""
+    ],
+    "transport-subway": [
+      "setPaint line-color=\"#27333e\""
+    ],
+    "transport-subway:outline": [
+      "setPaint line-color=\"#384a59\""
+    ],
+    "tunnel-street-arterial-link": [
+      "setPaint line-color=\"#2f2600\""
+    ],
+    "tunnel-street-arterial-link:outline": [
+      "setPaint line-color=\"#4b290c\""
+    ],
+    "tunnel-street-bus": [
+      "setPaint line-color=\"#040404\""
+    ],
+    "tunnel-street-bus:outline": [
+      "setPaint line-color=\"#141312\""
+    ],
+    "tunnel-street-livingstreet": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "tunnel-street-livingstreet:outline": [
+      "setPaint line-color=\"#1d1c1a\""
+    ],
+    "tunnel-street-minor": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "tunnel-street-minor-bicycle": [
+      "setPaint line-color=\"#000609\""
+    ],
+    "tunnel-street-minor:outline": [
+      "setPaint line-color=\"#1d1c1a\""
+    ],
+    "tunnel-street-motorway": [
+      "setPaint line-color=\"#412500\""
+    ],
+    "tunnel-street-motorway-link": [
+      "setPaint line-color=\"#412500\""
+    ],
+    "tunnel-street-motorway-link:outline": [
+      "setPaint line-color=\"#4b290c\""
+    ],
+    "tunnel-street-motorway:outline": [
+      "setPaint line-color=\"#4b290c\""
+    ],
+    "tunnel-street-pedestrian": [
+      "setPaint line-color=\"#09000b\""
+    ],
+    "tunnel-street-pedestrian-bicycle": [
+      "setPaint line-color=\"#000609\""
+    ],
+    "tunnel-street-pedestrian-zone": [
+      "setPaint fill-color=\"#000000\""
+    ],
+    "tunnel-street-pedestrian:outline": [
+      "setPaint line-color=\"#1d1c1a\""
+    ],
+    "tunnel-street-primary": [
+      "setPaint line-color=\"#2f2600\""
+    ],
+    "tunnel-street-primary:outline": [
+      "setPaint line-color=\"#4b290c\""
+    ],
+    "tunnel-street-secondary": [
+      "setPaint line-color=\"#2f2600\""
+    ],
+    "tunnel-street-secondary:outline": [
+      "setPaint line-color=\"#4b290c\""
+    ],
+    "tunnel-street-service": [
+      "setPaint line-color=\"#040404\""
+    ],
+    "tunnel-street-service:outline": [
+      "setPaint line-color=\"#141312\""
+    ],
+    "tunnel-street-tertiary": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "tunnel-street-tertiary-link": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "tunnel-street-tertiary-link:outline": [
+      "setPaint line-color=\"#1d1c1a\""
+    ],
+    "tunnel-street-tertiary:outline": [
+      "setPaint line-color=\"#1d1c1a\""
+    ],
+    "tunnel-street-track": [
+      "setPaint line-color=\"#000000\""
+    ],
+    "tunnel-street-track:outline": [
+      "setPaint line-color=\"#1d1c1a\""
+    ],
+    "tunnel-street-trunk": [
+      "setPaint line-color=\"#2f2600\""
+    ],
+    "tunnel-street-trunk-link": [
+      "setPaint line-color=\"#2f2600\""
+    ],
+    "tunnel-street-trunk-link:outline": [
+      "setPaint line-color=\"#4b290c\""
+    ],
+    "tunnel-street-trunk:outline": [
+      "setPaint line-color=\"#4b290c\""
+    ],
+    "tunnel-transport-lightrail": [
+      "setPaint line-color=\"#171b1e\""
+    ],
+    "tunnel-transport-lightrail-service": [
+      "setPaint line-color=\"#171b1e\""
+    ],
+    "tunnel-transport-lightrail-service:outline": [
+      "setPaint line-color=\"#20262b\""
+    ],
+    "tunnel-transport-lightrail:outline": [
+      "setPaint line-color=\"#20262b\""
+    ],
+    "tunnel-transport-minorrail": [
+      "setPaint line-color=\"#20262b\""
+    ],
+    "tunnel-transport-minorrail:outline": [
+      "setPaint line-color=\"#20262b\""
+    ],
+    "tunnel-transport-rail": [
+      "setPaint line-color=\"#171b1e\""
+    ],
+    "tunnel-transport-rail-service": [
+      "setPaint line-color=\"#171b1e\""
+    ],
+    "tunnel-transport-rail-service:outline": [
+      "setPaint line-color=\"#20262b\""
+    ],
+    "tunnel-transport-rail:outline": [
+      "setPaint line-color=\"#20262b\""
+    ],
+    "tunnel-transport-subway": [
+      "setPaint line-color=\"#161d22\""
+    ],
+    "tunnel-transport-subway:outline": [
+      "setPaint line-color=\"#1f2931\""
+    ],
+    "tunnel-way-cycleway": [
+      "setPaint line-color=\"#000609\""
+    ],
+    "tunnel-way-cycleway:outline": [
+      "setPaint line-color=\"#0e1316\""
+    ],
+    "tunnel-way-footway": [
+      "setPaint line-color=\"#09000b\""
+    ],
+    "tunnel-way-footway:outline": [
+      "setPaint line-color=\"#160e18\""
+    ],
+    "tunnel-way-path": [
+      "setPaint line-color=\"#09000b\""
+    ],
+    "tunnel-way-path:outline": [
+      "setPaint line-color=\"#160e18\""
+    ],
+    "tunnel-way-steps": [
+      "setPaint line-color=\"#09000b\""
+    ],
+    "tunnel-way-steps:outline": [
+      "setPaint line-color=\"#160e18\""
+    ],
+    "water-area": [
+      "setPaint fill-color=\"#0d2740\""
+    ],
+    "water-area-river": [
+      "setPaint fill-color=\"#0d2740\""
+    ],
+    "water-area-small": [
+      "setPaint fill-color=\"#0d2740\""
+    ],
+    "water-canal": [
+      "setPaint line-color=\"#123659\""
+    ],
+    "water-dam": [
+      "setPaint line-color=\"#0d2740\""
+    ],
+    "water-dam-area": [
+      "setPaint fill-color=\"#0f0b07\""
+    ],
+    "water-ditch": [
+      "setPaint line-color=\"#123659\""
+    ],
+    "water-ocean": [
+      "setPaint fill-color=\"#0d2740\""
+    ],
+    "water-pier": [
+      "setPaint line-color=\"#0f0b07\""
+    ],
+    "water-pier-area": [
+      "setPaint fill-color=\"#0f0b07\""
+    ],
+    "water-river": [
+      "setPaint line-color=\"#123659\""
+    ],
+    "water-stream": [
+      "setPaint line-color=\"#123659\""
+    ],
+    "way-cycleway": [
+      "setPaint line-color=\"#000a10\""
+    ],
+    "way-cycleway:outline": [
+      "setPaint line-color=\"#192228\""
+    ],
+    "way-footway": [
+      "setPaint line-color=\"#100014\""
+    ],
+    "way-footway:outline": [
+      "setPaint line-color=\"#27192b\""
+    ],
+    "way-path": [
+      "setPaint line-color=\"#100014\""
+    ],
+    "way-path:outline": [
+      "setPaint line-color=\"#27192b\""
+    ],
+    "way-steps": [
+      "setPaint line-color=\"#100014\""
+    ],
+    "way-steps:outline": [
+      "setPaint line-color=\"#27192b\""
+    ]
+  }
+}

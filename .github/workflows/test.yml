@@ -1,0 +1,110 @@
+name: Test
+
+# このリポジトリは 3 つの SDK が共有する唯一のレンダラなので、ここが壊れると
+# android / ios / web が同時に壊れる。にもかかわらず CI が無かった。
+#
+# 2 つ走らせる。片方だけでは足りないため:
+#   - cargo test    : ラスタライザ・ラベル配置・スタイル解釈（Rust 141 本）
+#   - bindings/js   : wasm 越しの表面。Rust が通っても束縛がずれていれば落ちる
+#
+# wasm は git 管理外（.gitignore: bindings/js/pkg/）なので、JS テストの前に
+# wasm-pack でビルドする必要がある。
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    name: cargo test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: Test
+        run: cargo test --workspace
+
+      # clippy はまだゲートにしない。現状 17 件の警告があり、初日から赤い CI は
+      # 読まれなくなる。掃除してから `-D warnings` を足すこと。
+
+  bindings-js:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    name: bindings/js test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # `node --test "test/*.test.mjs"` は Node 21 からグロブを展開する。
+          # 20 ではパターンをそのままファイル名として探し、見つからずに落ちる。
+          node-version: 22
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-wasm-${{ runner.os }}-
+
+      # cargo で入れる。サードパーティ action も curl | sh も使わない — この
+      # ワークフローは 3 つの SDK が信頼するバイナリを作る側なので、取り込む
+      # ものは少ないほどよい。~/.cargo/bin をキャッシュするので 2 回目以降は速い。
+      - name: Install wasm-pack
+        run: command -v wasm-pack || cargo install wasm-pack --locked
+
+      - name: Install
+        working-directory: bindings/js
+        run: npm ci
+
+      # `npm run build` は wasm と JS の両方。テストは pkg/ を直接読むので、
+      # ここを飛ばすと「モジュールが見つからない」で落ちる。
+      - name: Build
+        working-directory: bindings/js
+        run: npm run build
+
+      - name: Typecheck
+        working-directory: bindings/js
+        run: npm run typecheck
+
+      - name: Test
+        working-directory: bindings/js
+        run: npm test

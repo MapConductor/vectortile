@@ -1,5 +1,7 @@
 import { loadWasm, type WasmRenderer } from './wasm';
-import { TileCache } from './TileCache';
+import { TileCache, sourceFetchStats, type SourceFetchStats } from './TileCache';
+import { SourceTileCache } from './SourceTileCache';
+import { RenderedTileCache, digest } from './RenderedTileCache';
 
 export interface TileRequest {
     readonly x: number;
@@ -10,9 +12,45 @@ export interface TileRequest {
 export interface TileRenderCoreOptions {
     /** A `style.json` URL, its raw text, or the parsed object. */
     style: string | object;
+    /**
+     * How many pixels a rendered tile has on each edge. Defaults to 512.
+     *
+     * On a screen with more device pixels than CSS pixels this is the larger
+     * number: the map is handed a sharper image for the same ground. What
+     * that ground is stays {@link displayTileSize}'s job.
+     */
     tileSize?: number;
+    /**
+     * The CSS px one tile covers on screen, when that is not the same as
+     * {@link tileSize}.
+     *
+     * Style dimensions are screen units, so the rasteriser needs both: the
+     * pixel count to fill, and the width those pixels are shown at. They are
+     * the same number on a 1x screen and differ by the device pixel ratio on
+     * a Retina one -- and getting it wrong is not subtle. Declare 1024 pixels
+     * without saying they cover 512 CSS px and every label and road comes out
+     * half size, with the style read one zoom too deep.
+     *
+     * Defaults to {@link tileSize}, which is exactly today's behaviour.
+     */
+    displayTileSize?: number;
     /** Source tile cache budget in bytes. Defaults to 16 MB. */
     cacheBytes?: number;
+    /**
+     * Keep rendered tiles in Cache Storage so a reload does not redraw them.
+     * Off by default: a library helping itself to a user's disk quota behind
+     * their back is not a favour.
+     */
+    persistRenderedTiles?: boolean;
+    /**
+     * Keep fetched source tiles in Cache Storage so reloads and remounts do
+     * not pay the network round trip again. Off by default, for the same
+     * reason as {@link persistRenderedTiles}.
+     *
+     * Worth having on top of that one: a restyle discards every rendered tile
+     * and keeps every source tile, so a recolour costs no network at all.
+     */
+    persistSourceTiles?: boolean;
     wasmUrl?: string | URL;
     /**
      * Headers sent with every source tile request — auth tokens, API keys.
@@ -23,7 +61,7 @@ export interface TileRenderCoreOptions {
      * Full control over source tile fetching. Not cloneable, so supplying this
      * forces main-thread rendering; use `headers` if that is all you need.
      */
-    fetchTile?: (url: string) => Promise<Uint8Array | null>;
+    fetchTile?: (url: string, signal?: AbortSignal) => Promise<Uint8Array | null>;
     onWarning?: (message: string) => void;
 }
 
@@ -36,14 +74,55 @@ interface PlanEntry {
     scale: number;
     offsetX: number;
     offsetY: number;
+    /** A neighbour only the label pass reads, so a name at the tile edge can
+     *  be drawn whole. */
+    labelsOnly?: boolean;
+}
+
+/**
+ * Whether the host asked for the per-tile log, read fresh each time.
+ *
+ * Off, every call has to cost nothing: these fire per tile per content half,
+ * so the message itself is built behind a closure rather than passed in.
+ * Reading the flag is wrapped because `localStorage` throws outright in a
+ * private window.
+ */
+function debugging(): boolean {
+    try {
+        const global = globalThis as { MAPCONDUCTOR_DEBUG_LOG?: string; localStorage?: Storage };
+        return (
+            global.MAPCONDUCTOR_DEBUG_LOG === '1' ||
+            global.localStorage?.getItem('MAPCONDUCTOR_DEBUG_LOG') === '1'
+        );
+    } catch {
+        return false;
+    }
+}
+
+function debug(message: () => string): void {
+    if (!debugging()) return;
+    try {
+        console.debug(`[MapConductor][VectorTile] ${message()}`);
+    } catch {
+        // A log must never be the thing that loses a tile.
+    }
+}
+
+function describe(stats: SourceFetchStats): string {
+    return (
+        `mvt(mem=${stats.memoryHits} disk=${stats.diskHits} net=${stats.networkFetches} ` +
+        `shared=${stats.sharedWaits} cancel=${stats.cancelled})`
+    );
 }
 
 function makeFetcher(
     headers?: Record<string, string>,
-): (url: string) => Promise<Uint8Array | null> {
+): (url: string, signal?: AbortSignal) => Promise<Uint8Array | null> {
     const init = headers && Object.keys(headers).length > 0 ? { headers } : undefined;
-    return async (url) => {
-        const response = await fetch(url, init);
+    return async (url, signal) => {
+        // The signal is what lets a pan abandon the tiles it no longer wants
+        // before they reach the renderer.
+        const response = await fetch(url, init ? { ...init, signal } : { signal });
         // A missing tile is normal at the edge of a source's coverage.
         if (response.status === 404 || response.status === 204) return null;
         if (!response.ok) throw new Error(`tile fetch failed: ${response.status} ${url}`);
@@ -71,10 +150,67 @@ async function resolveStyleText(style: string | object): Promise<string> {
  * runs on the main thread and inside a Web Worker. Only the transport around it
  * differs.
  */
+/** What a request should draw. */
+export type TileContent =
+    /** Ground and labels in one tile: the single-layer behaviour. */
+    | 'full'
+    /** Fills, lines and circles. No labels, no icons, no glyph dependency. */
+    | 'ground'
+    /** Labels and icons on a transparent ground. */
+    | 'labels';
+
 export class TileRenderCore {
     private readonly cache: TileCache;
-    private readonly fetchTile: (url: string) => Promise<Uint8Array | null>;
+    private readonly fetchTile: (url: string, signal?: AbortSignal) => Promise<Uint8Array | null>;
     private disposed = false;
+
+    /** Glyph ranges somebody has already claimed, so two tiles do not both
+     *  fetch the same one. */
+    private readonly claimed = new Set<string>();
+    private glyphsInFlight = 0;
+
+    /** Bumped when glyphs arrive, so tiles drawn before them stop being
+     *  served. Goes in the tile URL the host hands the map. */
+    private generation = 0;
+
+    /**
+     * Whether any tile has been drawn short of glyphs since the last handover.
+     *
+     * Most glyph arrivals change nothing: the ranges landed before anything
+     * needed them. Handing over anyway makes the map refetch and redraw the
+     * whole viewport to arrive at the same pixels.
+     */
+    private provisional = false;
+    private notifyTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /** Rendered PNGs across page loads. Null when Cache Storage is absent. */
+    private rendered: RenderedTileCache | null = null;
+
+    /** Identifies the style these tiles were drawn from, so a restyle simply
+     *  misses rather than needing anything deleted. */
+    private styleKey = '';
+
+    /**
+     * What this renderer draws, as a number that goes up whenever it draws
+     * more.
+     *
+     * A cache keyed only by style and coordinates is keyed by *what the style
+     * says*, not by *what the renderer did with it*. Kept in step with the
+     * Android and iOS bindings: they cache the output of the same core.
+     */
+    static readonly outputVersion = 22;
+
+    /**
+     * Told when glyphs arrive and the tiles already on screen are missing
+     * labels because of it. The host must make the map refetch — nothing else
+     * will replace them.
+     */
+    onGlyphsLoaded: (() => void) | null = null;
+
+    /** How long to let a burst of ranges settle before telling the host. */
+    private readonly notifyQuietMs = 400;
+    /** How long to keep holding that window open while ranges are in flight. */
+    private readonly notifyMaxWaitMs = 10_000;
 
     private constructor(
         private readonly renderer: WasmRenderer,
@@ -91,8 +227,19 @@ export class TileRenderCore {
             resolveStyleText(options.style),
         ]);
 
-        const renderer = new wasm.VectorTileRenderer(styleText);
-        const core = new TileRenderCore(renderer, options.tileSize ?? 512, options);
+        // The renderer needs the CSS px a tile covers on screen, which is the
+        // declared tile size -- not the pixel count a render asks for (the
+        // label pass draws at twice the pixels). It sets the size the style
+        // draws at and the zoom its expressions are read at.
+        const tileSize = options.tileSize ?? 512;
+        const renderer = new wasm.VectorTileRenderer(
+            styleText,
+            options.displayTileSize ?? tileSize,
+        );
+        const core = new TileRenderCore(renderer, tileSize, options);
+        core.styleKey = digest(styleText);
+        if (options.persistRenderedTiles) core.rendered = await RenderedTileCache.open();
+        if (options.persistSourceTiles) core.cache.persistent = await SourceTileCache.open();
         // Undrawn layer types are reported by the caller via
         // `unsupportedLayerTypes()`, not warned about here — otherwise the
         // worker path would surface the same message twice.
@@ -107,6 +254,8 @@ export class TileRenderCore {
      */
     async setStyle(styleText: string, onWarning?: (message: string) => void): Promise<void> {
         this.renderer.setStyle(styleText);
+        // Rendered tiles are keyed by style, so the old ones stop being found.
+        this.styleKey = digest(styleText);
         // The new style may name sources the old one did not, or reuse ones
         // whose TileJSON was already resolved; resolving again is idempotent.
         await this.resolveTileJson(onWarning);
@@ -162,19 +311,53 @@ export class TileRenderCore {
         );
     }
 
-    /** Renders one tile to PNG bytes. Returns null once disposed. */
-    async renderTile(request: TileRequest): Promise<Uint8Array | null> {
+    /**
+     * Fetches everything the plan asks for and packs it the way wasm takes it:
+     * one concatenated buffer plus a length table, `0` for a tile that failed
+     * to fetch.
+     *
+     * An array-of-arrays would need a marshaller on every platform; this needs
+     * none, which is why the wasm, JNI and C surfaces all agree on the shape.
+     * Returns null once disposed.
+     */
+    private async packTiles(
+        request: TileRequest,
+        content: TileContent = 'full',
+        signal?: AbortSignal,
+        stats?: SourceFetchStats,
+    ): Promise<{ data: Uint8Array; lengths: Uint32Array } | null> {
         if (this.disposed) return null;
         const { z, x, y } = request;
 
         const plan = JSON.parse(this.renderer.plan(z, x, y)) as PlanEntry[];
-        const fetched = await Promise.all(
-            plan.map((entry) => this.cache.get(entry.url, this.fetchTile)),
+        const fetched: (Uint8Array | null)[] = new Array(plan.length).fill(null);
+        // The tile's own data is asked for before the ring of neighbours it
+        // only needs to judge labels against. Both sets are wanted, but a
+        // browser gives a handful of connections per origin, and with the
+        // plan's own order the neighbours of the first tile queue ahead of the
+        // second tile's own data -- so the screen fills a tile at a time
+        // instead of all at once. The result array keeps the plan's order
+        // regardless; the wasm side reads it positionally.
+        const ordered = plan
+            .map((entry, index) => ({ entry, index }))
+            .sort(
+                (a, b) =>
+                    (a.entry.labelsOnly ? plan.length : 0) +
+                    a.index -
+                    ((b.entry.labelsOnly ? plan.length : 0) + b.index),
+            );
+        await Promise.all(
+            ordered.map(async ({ entry, index }) => {
+                // The ground never draws a label, so the ring of neighbours the
+                // label pass asks for is nine fetches it has no use for. The
+                // entry stays in place -- the wasm side reads the plan
+                // positionally -- but holds nothing.
+                if (content === 'ground' && entry.labelsOnly) return;
+                fetched[index] = await this.cache.get(entry.url, this.fetchTile, signal, stats);
+            }),
         );
         if (this.disposed) return null;
 
-        // The wasm boundary takes one concatenated buffer plus a length table,
-        // which avoids marshalling an array-of-arrays on any platform.
         const lengths = new Uint32Array(fetched.length);
         let total = 0;
         fetched.forEach((bytes, i) => {
@@ -190,13 +373,362 @@ export class TileRenderCore {
             data.set(bytes, offset);
             offset += bytes.byteLength;
         }
+        return { data, lengths };
+    }
 
-        return this.renderer.render(z, x, y, this.tileSize, data, lengths);
+    /** The generation to put in a tile URL, so tiles drawn short of their
+     *  glyphs stop being served once the glyphs land. */
+    get glyphGeneration(): number {
+        return this.generation;
+    }
+
+    /**
+     * Renders one tile to PNG bytes, warming its glyphs first.
+     *
+     * The tile is drawn with whatever glyphs are already in, exactly as
+     * MapLibre does it: waiting for the ranges means a tile at low zoom draws
+     * nothing for many seconds. The ones that arrive later bring their labels
+     * with them through {@link onGlyphsLoaded}.
+     */
+    async renderTile(
+        request: TileRequest,
+        content: TileContent = 'full',
+        signal?: AbortSignal,
+    ): Promise<Uint8Array | null> {
+        if (this.disposed || signal?.aborted) return null;
+        const { z, x, y } = request;
+
+        /*
+         Two keys, because a rendered tile goes stale for one reason only: it
+         was drawn while some of its glyphs were still on the way. A tile that
+         had them all is finished, and no later arrival can change it, so it is
+         stored under a key with no generation in it and survives every
+         handover. Only the ones drawn short are tied to the generation they
+         were drawn at, and only they are redrawn.
+        */
+        const keyFor = (generation: string) =>
+            digest(
+                this.styleKey,
+                String(this.tileSize),
+                `v${TileRenderCore.outputVersion}`,
+                generation,
+                `${z}/${x}/${y}`,
+            );
+        // The ground has no glyphs to be short of; one key, forever.
+        const completeKey = keyFor(content === 'ground' ? 'ground' : `${content}-complete`);
+        const provisionalKey =
+            content === 'ground' ? null : keyFor(`${content}-g${this.generation}`);
+        if (this.rendered) {
+            for (const candidate of [completeKey, provisionalKey]) {
+                if (!candidate) continue;
+                const hit = await this.rendered.get(candidate);
+                if (hit) return hit;
+            }
+        }
+
+        const stats = sourceFetchStats();
+        const fetchStarted = performance.now();
+        const packed = await this.packTiles(request, content, signal, stats);
+        const fetchMs = Math.round(performance.now() - fetchStarted);
+        if (!packed || signal?.aborted) {
+            debug(() => `tile ${z}/${x}/${y} ${content} cancelled after ${fetchMs}ms ${describe(stats)}`);
+            return null;
+        }
+
+        // The ground has no labels, so it has no glyphs to be short of.
+        let short = false;
+        if (content !== 'ground') {
+            short = this.claimGlyphs(request, packed);
+            if (short) this.provisional = true;
+        }
+        // The last chance to bail: past here the work is inside wasm and cannot
+        // be interrupted, and it is the part that takes the time.
+        if (this.disposed || signal?.aborted) return null;
+
+        const renderStarted = performance.now();
+        let png: Uint8Array | null;
+        if (content === 'labels') {
+            const resolution = this.tileSize * TileRenderCore.labelResolution;
+            const tile = this.renderer.renderLabelsPng(
+                z, x, y, resolution, packed.data, packed.lengths,
+            );
+            try {
+                // A tile with nothing on it is common -- water, fields -- and
+                // an empty result says so rather than costing an encode.
+                //
+                // Copied, not handed out: every caller of this method owns what
+                // it gets back, because the worker transfers it. Returning the
+                // shared constant detaches it on the first empty tile and every
+                // one after that fails to post.
+                png =
+                    tile.placed > 0
+                        ? tile.takePixels()
+                        : TileRenderCore.emptyTile.slice();
+            } finally {
+                // wasm-bindgen objects are not garbage collected; one leaked
+                // per tile would be a leak per tile.
+                tile.free();
+            }
+        } else if (content === 'ground') {
+            png = this.renderer.renderGeometry(
+                z, x, y, this.tileSize, packed.data, packed.lengths,
+            );
+        } else {
+            png = this.renderer.render(z, x, y, this.tileSize, packed.data, packed.lengths);
+        }
+
+        const store = short ? provisionalKey : completeKey;
+        if (png && store) void this.rendered?.put(store, png);
+        debug(
+            () =>
+                `tile ${z}/${x}/${y} ${content} fetch=${fetchMs}ms ` +
+                `render=${Math.round(performance.now() - renderStarted)}ms ` +
+                `bytes=${png?.byteLength ?? 0} ${describe(stats)}`,
+        );
+        return png;
+    }
+
+    /**
+     * The grain the label layer is drawn at, as a multiple of the tile size.
+     *
+     * Labels are the one thing on a map read as *shapes*, so they show a tile's
+     * resolution the way nothing else does; the geometry beneath them does not
+     * need it.
+     */
+    static readonly labelResolution = 2;
+
+    /** One 1x1 transparent PNG, served for every empty label tile. */
+    private static readonly emptyTile = new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
+        0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+        0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
+        0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]);
+
+    /**
+     * Starts fetching the glyph ranges this tile wants, and returns whether it
+     * is about to be drawn without some of them.
+     *
+     * Claiming is what stops two tiles wanting the same range from both paying
+     * for it; a range that fails stays claimed, because a range the server does
+     * not have will not appear on a retry.
+     */
+    private claimGlyphs(
+        request: TileRequest,
+        packed: { data: Uint8Array; lengths: Uint32Array },
+    ): boolean {
+        const { z, x, y } = request;
+        let needed: string[];
+        try {
+            needed = JSON.parse(
+                this.renderer.neededGlyphs(z, x, y, packed.data, packed.lengths),
+            ) as string[];
+        } catch {
+            return false;
+        }
+        if (needed.length === 0) return false;
+
+        const mine = needed.filter((url) => !this.claimed.has(url));
+        mine.forEach((url) => this.claimed.add(url));
+        if (mine.length === 0) return true;
+
+        for (const url of mine) {
+            this.glyphsInFlight += 1;
+            void (async () => {
+                try {
+                    const pbf = await this.fetchTile(url);
+                    if (this.disposed || !pbf) return;
+                    if (this.renderer.addGlyphs(pbf) > 0) this.glyphsArrived();
+                } catch {
+                    // A range that will not load or parse is a tile drawn
+                    // without those characters, not a failed render.
+                } finally {
+                    this.glyphsInFlight -= 1;
+                }
+            })();
+        }
+        return true;
+    }
+
+    /**
+     * Tells the host that tiles drawn before now are missing labels.
+     *
+     * Coalesced: a viewport's worth of ranges lands in a burst, and asking the
+     * map to refetch on each one redraws everything dozens of times to reach
+     * the same picture. The window is held open while ranges are still coming,
+     * because arrivals are spread out and a window that closes between them is
+     * a handover per range.
+     */
+    private glyphsArrived(): void {
+        this.generation += 1;
+        if (this.notifyTimer) return;
+
+        const deadline = Date.now() + this.notifyMaxWaitMs;
+        const check = () => {
+            if (this.disposed) return;
+            if (this.glyphsInFlight > 0 && Date.now() < deadline) {
+                this.notifyTimer = setTimeout(check, this.notifyQuietMs);
+                return;
+            }
+            this.notifyTimer = null;
+            // Nothing to hand over to: every tile drawn since the last one had
+            // all the glyphs it wanted, so what is on screen is already the
+            // finished picture.
+            if (!this.provisional) return;
+            this.provisional = false;
+            this.onGlyphsLoaded?.();
+        };
+        this.notifyTimer = setTimeout(check, this.notifyQuietMs);
+    }
+
+    /**
+     * Renders the ground alone — fills, lines and circles, no labels or icons.
+     *
+     * Half of a split layer. Serve this and {@link renderLabelTile} as two
+     * stacked raster layers and the map shows one: the halves are drawn in
+     * parallel, and a font landing redraws only the transparent one, so a
+     * label appearing never blanks the map underneath it.
+     */
+    async renderGeometryTile(request: TileRequest): Promise<Uint8Array | null> {
+        const packed = await this.packTiles(request);
+        if (!packed) return null;
+        const { z, x, y } = request;
+        return this.renderer.renderGeometry(z, x, y, this.tileSize, packed.data, packed.lengths);
+    }
+
+    /**
+     * Renders the labels and icons alone, on a transparent ground.
+     *
+     * The other half of a split layer. `placed` of zero means nothing was
+     * drawn — water and fields are common — and `pixels` is then empty, so the
+     * caller can serve one shared transparent image rather than encode a
+     * megabyte of nothing.
+     *
+     * `pixels` is **premultiplied** RGBA. Handing it to a canvas as straight
+     * alpha turns every halo grey.
+     */
+    async renderLabelTile(
+        request: TileRequest,
+        tileSize = this.tileSize,
+    ): Promise<{ pixels: Uint8Array; placed: number } | null> {
+        const packed = await this.packTiles(request);
+        if (!packed) return null;
+        const { z, x, y } = request;
+        const tile = this.renderer.renderLabels(
+            z, x, y, tileSize, packed.data, packed.lengths,
+        );
+        try {
+            return { pixels: tile.takePixels(), placed: tile.placed };
+        } finally {
+            // wasm-bindgen objects are not garbage collected; one leaked per
+            // tile would be a leak per tile.
+            tile.free();
+        }
+    }
+
+    /**
+     * Fetches the glyph ranges this tile's labels need and hands them to the
+     * renderer. Returns how many ranges were added.
+     *
+     * Labels are drawn with whatever is loaded at the moment the tile is
+     * drawn, so a tile rendered before this resolves comes out bare and has to
+     * be redrawn once it does. Call it before rendering, and redraw when the
+     * count is non-zero.
+     */
+    async warmGlyphs(request: TileRequest): Promise<number> {
+        const packed = await this.packTiles(request);
+        if (!packed) return 0;
+        const { z, x, y } = request;
+        const urls = JSON.parse(
+            this.renderer.neededGlyphs(z, x, y, packed.data, packed.lengths),
+        ) as string[];
+
+        const ranges = await Promise.all(
+            urls.map(async (url) => {
+                try {
+                    return await this.fetchTile(url);
+                } catch {
+                    // A range that will not load is a tile drawn without those
+                    // characters, not a failed render.
+                    return null;
+                }
+            }),
+        );
+        if (this.disposed) return 0;
+
+        let added = 0;
+        for (const pbf of ranges) {
+            if (!pbf) continue;
+            try {
+                this.renderer.addGlyphs(pbf);
+                added += 1;
+            } catch {
+                // A malformed range is a bad download, not a reason to stop.
+            }
+        }
+        return added;
+    }
+
+    /** Whether any glyph has been loaded. Labels need at least one. */
+    hasGlyphs(): boolean {
+        return this.renderer.hasGlyphs();
+    }
+
+    /**
+     * Fetches the style's sprite sheet, if it names one, and hands it over.
+     * Returns how many icons it carried, or 0 when there is no sprite.
+     *
+     * Icons are drawn only where the sheet has them, so until this resolves a
+     * style's shields and pins are simply absent.
+     */
+    async loadSprite(pixelRatio = 2): Promise<number> {
+        const urls = JSON.parse(this.renderer.spriteUrls(pixelRatio)) as string[];
+        const jsonUrl = urls[0];
+        const pngUrl = urls[1];
+        // Empty when the style names no sprite at all.
+        if (!jsonUrl || !pngUrl) return 0;
+
+        const [indexBytes, sheet] = await Promise.all([
+            this.fetchTile(jsonUrl),
+            this.fetchTile(pngUrl),
+        ]);
+        if (this.disposed || !indexBytes || !sheet) return 0;
+        return this.renderer.addSprite(new TextDecoder().decode(indexBytes), sheet);
+    }
+
+    /** Whether the style names a sprite that has not been loaded yet. */
+    needsSprite(): boolean {
+        return this.renderer.needsSprite();
+    }
+
+    /**
+     * Whether this tile has to be drawn on the CPU because the style paints
+     * something a GPU path cannot — today, a patterned fill.
+     */
+    async needsCpu(request: TileRequest): Promise<boolean> {
+        const packed = await this.packTiles(request);
+        if (!packed) return true;
+        return this.renderer.needsCpu(request.z, packed.data, packed.lengths);
+    }
+
+    /**
+     * Credits the style's sources ask to be shown.
+     *
+     * The host must display these: a style is data under someone's licence,
+     * and a basemap drawing OpenStreetMap requires the credit. May contain
+     * HTML — the text is normally a link to the licence.
+     */
+    attributions(): string[] {
+        return JSON.parse(this.renderer.attributions()) as string[];
     }
 
     dispose(): void {
         if (this.disposed) return;
         this.disposed = true;
+        if (this.notifyTimer) clearTimeout(this.notifyTimer);
+        this.notifyTimer = null;
         this.cache.clear();
         this.renderer.free();
     }

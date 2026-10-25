@@ -15,7 +15,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use jni::objects::JByteBuffer;
 use jni::objects::{JByteArray, JClass, JIntArray, JString};
 #[cfg(feature = "tessellate")]
-use jni::sys::jfloatArray;
+use jni::sys::jobject;
 use jni::sys::{jbyteArray, jint, jlong, jstring};
 use jni::JNIEnv;
 use mvt_render::Renderer;
@@ -56,6 +56,11 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNew
     mut env: JNIEnv,
     _class: JClass,
     style_json: JString,
+    // dp one tile covers where the host shows it. Not the pixel count a render
+    // is asked for: a label pass draws at twice the pixels, and a 256 dp tile
+    // is still 256 dp however many pixels it carries. Sets the size the style
+    // draws at and the zoom its expressions are read at.
+    display_tile_size: jint,
 ) -> jlong {
     guarded(&mut env, 0, |env| {
         let style: String = match env.get_string(&style_json) {
@@ -66,7 +71,10 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNew
             }
         };
         match Renderer::new(&style) {
-            Ok(renderer) => Box::into_raw(Box::new(renderer)) as jlong,
+            Ok(renderer) => {
+                let renderer = renderer.with_display_tile_size(display_tile_size.max(1) as u32);
+                Box::into_raw(Box::new(renderer)) as jlong
+            }
             Err(error) => {
                 throw(env, ILLEGAL_ARGUMENT, &error.to_string());
                 0
@@ -150,7 +158,7 @@ fn plan_json(renderer: &Renderer, z: jint, x: jint, y: jint) -> String {
         // Hand-built rather than pulling serde_json in for six fields; the
         // only interpolated string is a URL from the style.
         out.push_str(&format!(
-            r#"{{"sourceId":{},"url":{},"z":{},"x":{},"y":{},"scale":{},"offsetX":{},"offsetY":{}}}"#,
+            r#"{{"sourceId":{},"url":{},"z":{},"x":{},"y":{},"scale":{},"offsetX":{},"offsetY":{},"labelsOnly":{}}}"#,
             json_string(&request.source_id),
             json_string(&request.url),
             request.z,
@@ -159,6 +167,7 @@ fn plan_json(renderer: &Renderer, z: jint, x: jint, y: jint) -> String {
             request.scale,
             request.offset_x,
             request.offset_y,
+            request.labels_only,
         ));
     }
     out.push(']');
@@ -334,6 +343,99 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeGly
 /// URLs rather than parts: the host has nothing to do with the pair except
 /// fetch it, and building the string here keeps one copy of the substitution
 /// rules instead of one per platform.
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeQueryFeatures(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+    source_layer: JString,
+    filter_json: JString,
+    text: JString,
+    limit: jint,
+) -> jstring {
+    // Features in the tile as JSON; see `Renderer::query_features_json`.
+    // Null strings mean "no restriction". A filter that is not JSON throws.
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        let data_bytes = match env.convert_byte_array(&data) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad tile data: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let count = match env.get_array_length(&lengths) {
+            Ok(value) => value as usize,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let mut length_table = vec![0i32; count];
+        if let Err(error) = env.get_int_array_region(&lengths, 0, &mut length_table) {
+            throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+            return std::ptr::null_mut();
+        }
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(count);
+        let mut offset = 0usize;
+        for length in &length_table {
+            if *length <= 0 {
+                slices.push(None);
+                continue;
+            }
+            let length = *length as usize;
+            if offset + length > data_bytes.len() {
+                slices.push(None);
+                continue;
+            }
+            slices.push(Some(&data_bytes[offset..offset + length]));
+            offset += length;
+        }
+        let source_layer = optional_string(env, &source_layer);
+        let filter_json = optional_string(env, &filter_json);
+        let text = optional_string(env, &text);
+        let json = match renderer.query_features_json(
+            z as u8,
+            x as u32,
+            y as u32,
+            &slices,
+            source_layer.as_deref(),
+            filter_json.as_deref(),
+            text.as_deref(),
+            limit.max(0) as usize,
+        ) {
+            Ok(json) => json,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("{error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        match env.new_string(json) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// A possibly-null Java string.
+fn optional_string(env: &mut JNIEnv, value: &JString) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    env.get_string(value).ok().map(|s| s.into())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeNeededGlyphs(
     mut env: JNIEnv,
     _class: JClass,
@@ -672,11 +774,176 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeDra
     })
 }
 
+/// Draws a transparent label tile and returns its premultiplied RGBA allocation
+/// as a direct buffer. The label count is written to `placed_out[0]`.
+#[cfg(feature = "tessellate")]
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeRenderLabels(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    z: jint,
+    x: jint,
+    y: jint,
+    tile_size: jint,
+    data: JByteArray,
+    lengths: JIntArray,
+    placed_out: JIntArray,
+) -> jobject {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        if env.get_array_length(&placed_out).unwrap_or(0) < 1 {
+            throw(env, ILLEGAL_ARGUMENT, "placed output is empty");
+            return std::ptr::null_mut();
+        }
+
+        let data_bytes = match env.convert_byte_array(&data) {
+            Ok(value) => value,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad tile data: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let count = match env.get_array_length(&lengths) {
+            Ok(value) => value as usize,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let mut length_table = vec![0i32; count];
+        if let Err(error) = env.get_int_array_region(&lengths, 0, &mut length_table) {
+            throw(env, ILLEGAL_ARGUMENT, &format!("bad length table: {error}"));
+            return std::ptr::null_mut();
+        }
+        let mut slices: Vec<Option<&[u8]>> = Vec::with_capacity(count);
+        let mut offset = 0usize;
+        for length in &length_table {
+            if *length <= 0 {
+                slices.push(None);
+                continue;
+            }
+            let length = *length as usize;
+            if offset + length > data_bytes.len() {
+                slices.push(None);
+                continue;
+            }
+            slices.push(Some(&data_bytes[offset..offset + length]));
+            offset += length;
+        }
+
+        let (pixels, placed) = match renderer.render_labels_rgba(
+            z as u8,
+            x as u32,
+            y as u32,
+            tile_size as u32,
+            &slices,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                throw(env, ILLEGAL_ARGUMENT, &format!("{error}"));
+                return std::ptr::null_mut();
+            }
+        };
+        if env
+            .set_int_array_region(&placed_out, 0, &[placed as jint])
+            .is_err()
+        {
+            throw(env, RUNTIME_EXCEPTION, "could not return label count");
+            return std::ptr::null_mut();
+        }
+        if pixels.is_empty() {
+            return std::ptr::null_mut();
+        }
+
+        let mut pixels = pixels.into_boxed_slice();
+        let byte_len = pixels.len();
+        let address = pixels.as_mut_ptr();
+        match unsafe { env.new_direct_byte_buffer(address, byte_len) } {
+            Ok(buffer) => {
+                std::mem::forget(pixels);
+                buffer.into_raw()
+            }
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Releases the RGBA allocation returned by `nativeRenderLabels`.
+#[cfg(feature = "tessellate")]
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeFreeLabelPixels(
+    mut env: JNIEnv,
+    _class: JClass,
+    buffer: JByteBuffer,
+) {
+    guarded(&mut env, (), |env| {
+        let address = match env.get_direct_buffer_address(&buffer) {
+            Ok(address) => address,
+            Err(error) => {
+                throw(
+                    env,
+                    ILLEGAL_ARGUMENT,
+                    &format!("not a direct buffer: {error}"),
+                );
+                return;
+            }
+        };
+        let byte_len = match env.get_direct_buffer_capacity(&buffer) {
+            Ok(byte_len) => byte_len,
+            Err(error) => {
+                throw(
+                    env,
+                    ILLEGAL_ARGUMENT,
+                    &format!("bad direct buffer: {error}"),
+                );
+                return;
+            }
+        };
+        let slice = std::ptr::slice_from_raw_parts_mut(address, byte_len);
+        drop(unsafe { Box::from_raw(slice) });
+    });
+}
+
 fn empty_json_array(env: &mut JNIEnv) -> jstring {
     match env.new_string("[]") {
         Ok(value) => value.into_raw(),
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+/// JSON array of the credits the style's sources ask to be shown. May contain
+/// HTML: the host's attribution overlay renders it.
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeAttributions(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jstring {
+    guarded(&mut env, std::ptr::null_mut(), |env| {
+        let Some(renderer) = (unsafe { renderer(handle) }) else {
+            throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
+            return std::ptr::null_mut();
+        };
+        let credits: Vec<String> = renderer
+            .attributions()
+            .iter()
+            .map(|credit| json_string(credit))
+            .collect();
+        match env.new_string(format!("[{}]", credits.join(","))) {
+            Ok(value) => value.into_raw(),
+            Err(error) => {
+                throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
+                std::ptr::null_mut()
+            }
+        }
+    })
 }
 
 #[no_mangle]
@@ -705,7 +972,7 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeUns
     })
 }
 
-/// Triangulates a tile for a GPU, returning one packed `float[]`.
+/// Triangulates a tile for a GPU, returning one packed direct byte buffer.
 ///
 /// Layout, chosen so a single JNI call carries everything with no object
 /// marshalling:
@@ -717,8 +984,8 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeUns
 /// [6]                       batch count B
 /// [7..13]                   timings ms: copy-in, decode, tessellate,
 ///                           filter-compile, fill, line
-/// [10 .. 10+B*6]            per batch: r, g, b, a, firstVertex, vertexCount
-/// [10+B*6 ..]               interleaved x, y vertex positions
+/// [13 .. 13+B*2]            per batch: firstVertex, vertexCount
+/// [13+B*2 ..]               vertices: x, y, r, g, b, a
 /// ```
 ///
 /// The timings exist because the device-side cost had to be decomposed
@@ -738,7 +1005,7 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
     tile_size: jint,
     data: JByteArray,
     lengths: JIntArray,
-) -> jfloatArray {
+) -> jobject {
     guarded(&mut env, std::ptr::null_mut(), |env| {
         let Some(renderer) = (unsafe { renderer(handle) }) else {
             throw(env, ILLEGAL_ARGUMENT, "renderer handle is null");
@@ -795,13 +1062,16 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
             }
         };
 
-        match env.new_float_array(packed.len() as i32) {
-            Ok(array) => {
-                if env.set_float_array_region(&array, 0, &packed).is_err() {
-                    throw(env, RUNTIME_EXCEPTION, "could not fill the result array");
-                    return std::ptr::null_mut();
-                }
-                array.into_raw()
+        // Give Java a view of this allocation instead of copying the packed
+        // floats into a Java array. Kotlin releases it after glBufferData has
+        // synchronously consumed the client data.
+        let mut packed = packed.into_boxed_slice();
+        let byte_len = std::mem::size_of_val(packed.as_ref());
+        let address = packed.as_mut_ptr().cast::<u8>();
+        match unsafe { env.new_direct_byte_buffer(address, byte_len) } {
+            Ok(buffer) => {
+                std::mem::forget(packed);
+                buffer.into_raw()
             }
             Err(error) => {
                 throw(env, RUNTIME_EXCEPTION, &format!("{error}"));
@@ -809,6 +1079,55 @@ pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeTes
             }
         }
     })
+}
+
+/// Releases a packed tessellation returned by `nativeTessellate`.
+///
+/// DirectByteBuffer does not own its native address, so the caller must invoke
+/// this exactly once after OpenGL has consumed the data.
+#[cfg(feature = "tessellate")]
+#[no_mangle]
+pub extern "system" fn Java_com_mapconductor_vectortile_NativeRenderer_nativeFreeTessellation(
+    mut env: JNIEnv,
+    _class: JClass,
+    buffer: JByteBuffer,
+) {
+    guarded(&mut env, (), |env| {
+        let address = match env.get_direct_buffer_address(&buffer) {
+            Ok(address) => address,
+            Err(error) => {
+                throw(
+                    env,
+                    ILLEGAL_ARGUMENT,
+                    &format!("not a direct buffer: {error}"),
+                );
+                return;
+            }
+        };
+        let byte_len = match env.get_direct_buffer_capacity(&buffer) {
+            Ok(byte_len) => byte_len,
+            Err(error) => {
+                throw(
+                    env,
+                    ILLEGAL_ARGUMENT,
+                    &format!("bad direct buffer: {error}"),
+                );
+                return;
+            }
+        };
+        if byte_len % std::mem::size_of::<f32>() != 0 {
+            throw(
+                env,
+                ILLEGAL_ARGUMENT,
+                "tessellation buffer has invalid size",
+            );
+            return;
+        }
+
+        let float_len = byte_len / std::mem::size_of::<f32>();
+        let slice = std::ptr::slice_from_raw_parts_mut(address.cast::<f32>(), float_len);
+        drop(unsafe { Box::from_raw(slice) });
+    });
 }
 
 #[cfg(feature = "glbench-compat")]
@@ -863,7 +1182,7 @@ pub extern "system" fn Java_com_mapconductor_glbench_NativeTessellator_nativeTes
     tile_size: jint,
     data: JByteArray,
     lengths: JIntArray,
-) -> jni::sys::jfloatArray {
+) -> jobject {
     Java_com_mapconductor_vectortile_NativeRenderer_nativeTessellate(
         env, class, handle, z, x, y, tile_size, data, lengths,
     )

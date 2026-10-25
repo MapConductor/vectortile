@@ -14,6 +14,12 @@ earcutr = { version = "0.5", optional = true }
 # path's readback). Already in the tree transitively via tiny-skia, so this
 # adds no new code to any build.
 
+# Test-only. The renderer must not depend on the style compiler -- they ship
+# as separate libraries on purpose -- but the compiler's claim about which
+# expressions this renderer can evaluate has to be checked against it.
+[dev-dependencies]
+mvt-style = { path = "../mvt-style" }
+
 [features]
 default = []
 # Triangulation for the OpenGL ES experiment. Off by default: the CPU
@@ -27,5 +33,13 @@ name = "tessellate_file"
 required-features = ["tessellate"]
 
 [[example]]
+name = "export_stencil_experiment"
+required-features = ["tessellate"]
+
+[[example]]
 name = "tessellate_compare"
+required-features = ["tessellate"]
+
+[[example]]
+name = "pipeline_cost"
 required-features = ["tessellate"]

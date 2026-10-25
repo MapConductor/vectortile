@@ -16,9 +16,6 @@ use crate::filter::CompiledFilter;
 use crate::model::{self, GeomType};
 use crate::style::{LayerKind, Style};
 
-/// The reference tile size the style spec's pixel units are defined against.
-const REFERENCE_TILE_SIZE: f32 = 512.0;
-
 /// One draw call: a run of vertices in [`Tessellation::vertices`].
 ///
 /// Colour lives on the vertices, not here. A style layer may paint each
@@ -105,10 +102,39 @@ pub fn tessellate(
     style: &Style,
     zoom: f64,
     tile_size: u32,
+    // dp the tile covers on screen; `raster::REFERENCE_TILE_SIZE` when there is nothing
+    // better to say.
+    display_tile_size: f32,
     decoded: &[DecodedTile<'_>],
 ) -> Tessellation {
-    let paint_scale = tile_size as f32 / REFERENCE_TILE_SIZE;
+    tessellate_with(style, zoom, tile_size, display_tile_size, decoded, true)
+}
+
+/// [`tessellate`], with the overzoom window optional.
+///
+/// `windowed` is the ordinary case: a magnified tile only looks at the
+/// features that can land in it. Off, the whole source tile is triangulated
+/// at the magnified scale, which is what [`translated_clip`] cuts children
+/// out of -- one triangulation serving every child instead of one each.
+pub fn tessellate_with(
+    style: &Style,
+    zoom: f64,
+    tile_size: u32,
+    display_tile_size: f32,
+    decoded: &[DecodedTile<'_>],
+    windowed: bool,
+) -> Tessellation {
+    let paint_scale = tile_size as f32 / display_tile_size.max(1.0);
     let mut out = Tessellation::default();
+    let last_background = style.layers.iter().rposition(|layer| {
+        layer.kind == LayerKind::Background
+            && layer.is_visible()
+            && layer.applies_at(zoom)
+            && layer
+                .paint_color("background-color", &Ctx::zoom_only(zoom), Color::BLACK)
+                .with_opacity(layer.paint_number("background-opacity", &Ctx::zoom_only(zoom), 1.0) as f32)
+                .a > 0.0
+    });
     // Which features of each data layer fall inside the overzoom window,
     // worked out once per data layer rather than once per style layer. A
     // style reads one source layer through dozens of its own layers, and
@@ -117,7 +143,7 @@ pub fn tessellate(
     let mut in_window: std::collections::HashMap<usize, std::rc::Rc<Vec<u32>>> =
         std::collections::HashMap::new();
 
-    for layer in &style.layers {
+    for (layer_index, layer) in style.layers.iter().enumerate() {
         if !layer.kind.is_drawable() || !layer.is_visible() || !layer.applies_at(zoom) {
             continue;
         }
@@ -125,11 +151,22 @@ pub fn tessellate(
         if layer.kind == LayerKind::Background {
             let ctx = Ctx::zoom_only(zoom);
             let opacity = layer.paint_number("background-opacity", &ctx, 1.0) as f32;
-            out.background = Some(
-                layer
-                    .paint_color("background-color", &ctx, Color::BLACK)
-                    .with_opacity(opacity),
-            );
+            let color = layer
+                .paint_color("background-color", &ctx, Color::BLACK)
+                .with_opacity(opacity);
+            // Stacked, not replaced. A style may have several background
+            // layers, and keeping the last one throws the others away: the
+            // versatiles colorful style paints its cream background and then
+            // four `background-opacity: 0` layers, which exist only as slots
+            // for other layers to be inserted into. The last of those was
+            // being reported as the background, so the host cleared every
+            // tile to nothing and the map underneath showed through
+            // everywhere the data did not paint -- most of the sea, and the
+            // land between the roads.
+            out.background = Some(match out.background {
+                Some(under) => color.over(under),
+                None => color,
+            });
             continue;
         }
 
@@ -151,6 +188,9 @@ pub fn tessellate(
             out.extent = data.extent;
         }
         let unify = out.extent as f32 / data.extent as f32;
+        // Read out once: the feature writers need it and `out` is borrowed
+        // mutably for the vertex buffer while they run.
+        let out_extent = out.extent as f32;
 
         // The window this overzoomed tile actually shows, in the parent
         // tile's own units. A z16 tile drawn from a z14 parent covers one
@@ -159,7 +199,7 @@ pub fn tessellate(
         // the cost of a street-zoom tile, spent on features that could not
         // possibly appear. The margin is generous (an eighth of the window)
         // so a wide road casing or a label anchor just outside still draws.
-        let window = if tile.scale > 1.0 {
+        let window = if windowed && tile.scale > 1.0 {
             let extent = data.extent as f32;
             let span = extent / tile.scale;
             let margin = span / 8.0;
@@ -176,9 +216,9 @@ pub fn tessellate(
         let start_len = out.vertices.len();
 
         // Same compiled-filter fast path the CPU rasteriser uses.
-        let compile_started = std::time::Instant::now();
+        let compile_started = crate::clock::Stopwatch::start();
         let filter = CompiledFilter::compile(layer.filter.as_ref(), data, zoom);
-        out.stats.filter_compile_ms += compile_started.elapsed().as_secs_f32() * 1000.0;
+        out.stats.filter_compile_ms += compile_started.ms();
         if filter.never_matches() {
             continue;
         }
@@ -212,7 +252,7 @@ pub fn tessellate(
             None
         };
 
-        let loop_started = std::time::Instant::now();
+        let loop_started = crate::clock::Stopwatch::start();
         let candidates = in_window
             .entry(data as *const model::Layer as usize)
             .or_insert_with(|| {
@@ -297,46 +337,72 @@ pub fn tessellate(
                 continue;
             }
 
+            // Before any geometry changes the uniform opaque background,
+            // painting the same opaque colour cannot change a pixel. Roads
+            // recolours large forest polygons black on black; triangulating
+            // their thousands of holes otherwise occupies a phone for tens
+            // of seconds. Keep later covering shapes and translucent paint.
+            if out.vertices.is_empty()
+                && color.a == 1.0
+                && out.background == Some(color)
+                && last_background.map_or(true, |last| layer_index > last)
+            {
+                if !varies {
+                    break;
+                }
+                continue;
+            }
+
             match layer.kind {
                 LayerKind::Fill => {
-                    let started = std::time::Instant::now();
+                    let started = crate::clock::Stopwatch::start();
                     fill_feature(
                         feature,
                         tile,
                         unify,
+                        out_extent,
                         color,
                         &mut out.vertices,
                         &mut out.stats,
                     );
-                    out.stats.fill_ms += started.elapsed().as_secs_f32() * 1000.0;
+                    out.stats.fill_ms += started.ms();
                 }
                 LayerKind::Line => {
                     if size <= 0.0 {
                         continue;
                     }
-                    let started = std::time::Instant::now();
+                    let started = crate::clock::Stopwatch::start();
                     line_feature(
                         feature,
                         tile,
                         unify,
+                        out_extent,
                         size,
                         color,
                         dash_pattern.as_deref(),
                         &mut out.vertices,
                     );
-                    out.stats.line_ms += started.elapsed().as_secs_f32() * 1000.0;
+                    out.stats.line_ms += started.ms();
                 }
                 LayerKind::Circle => {
                     if size <= 0.0 {
                         continue;
                     }
-                    circle_feature(feature, tile, unify, size, color, &mut out.vertices);
+                    circle_feature(
+                        feature,
+                        tile,
+                        unify,
+                        out_extent,
+                        size,
+                        color,
+                        &mut out.vertices,
+                    );
                 }
                 _ => {}
             }
         }
 
-        out.stats.feature_loop_ms += loop_started.elapsed().as_secs_f32() * 1000.0;
+        out.stats.feature_loop_ms += loop_started.ms();
 
         let added = out.vertices.len() - start_len;
         if added == 0 {
@@ -357,13 +423,81 @@ pub fn tessellate(
     out
 }
 
-/// Maps a tile-local point through overzoom and extent unification.
+/// One child of a whole-source-tile triangulation.
+///
+/// Every vertex is taken into `extent` units (`unify`), moved by `dx`/`dy`,
+/// and a triangle is kept when its bounds touch the tile plus `margin`. The
+/// GPU clips exactly, so the margin only guards against float error at the
+/// edge; what matters is that no triangle crossing the tile is dropped.
+/// Batches keep their order and their layer, minus the ones left empty.
+pub fn translated_clip(
+    src: &Tessellation,
+    unify: f32,
+    dx: f32,
+    dy: f32,
+    extent: f32,
+    margin: f32,
+) -> Tessellation {
+    let (lo, hi) = (-margin, extent + margin);
+    let mut out = Tessellation {
+        vertices: Vec::with_capacity(src.vertices.len() / 4),
+        batches: Vec::with_capacity(src.batches.len()),
+        extent: extent as u32,
+        background: src.background,
+        stats: TessellationStats::default(),
+    };
+    const TRI: usize = VERTEX_STRIDE * 3;
+    for batch in &src.batches {
+        let start = out.vertices.len();
+        let first = batch.first_vertex as usize * VERTEX_STRIDE;
+        let end = first + batch.vertex_count as usize * VERTEX_STRIDE;
+        for tri in src.vertices[first..end].chunks_exact(TRI) {
+            let mut moved = [0f32; TRI];
+            moved.copy_from_slice(tri);
+            let (mut min_x, mut min_y, mut max_x, mut max_y) =
+                (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for v in moved.chunks_exact_mut(VERTEX_STRIDE) {
+                v[0] = v[0] * unify + dx;
+                v[1] = v[1] * unify + dy;
+                min_x = min_x.min(v[0]);
+                max_x = max_x.max(v[0]);
+                min_y = min_y.min(v[1]);
+                max_y = max_y.max(v[1]);
+            }
+            if max_x < lo || min_x > hi || max_y < lo || min_y > hi {
+                continue;
+            }
+            out.vertices.extend_from_slice(&moved);
+        }
+        let added = out.vertices.len() - start;
+        if added > 0 {
+            out.batches.push(Batch {
+                first_vertex: (start / VERTEX_STRIDE) as u32,
+                vertex_count: (added / VERTEX_STRIDE) as u32,
+                layer_id: batch.layer_id.clone(),
+            });
+        }
+    }
+    out
+}
+
+/// Maps a tile-local point through extent unification and overzoom.
+///
+/// `unify` takes the point into the output's extent; the offset is then a
+/// whole number of output extents, and the scale magnifies about that origin.
+/// The result is in output extent units, which is what the vertex shader
+/// divides by -- so the shader can stay trivial.
+///
+/// `extent` is the **output** extent, not the data tile's. It used to be
+/// hardcoded to 4096, which cancelled out as long as nothing was magnified and
+/// silently did not when something was: a tile drawn from its parent had its
+/// whole geometry pushed a tile-width off the edge and drew nothing but its
+/// background. Shortbread serves some layers at extent 2048 and some at 4096,
+/// so the two are not the same number even for an ordinary tile.
 #[inline]
 fn project(point: [f32; 2], tile: &DecodedTile<'_>, unify: f32, extent: f32) -> [f32; 2] {
-    // Same mapping the CPU rasteriser applies, expressed in tile units rather
-    // than pixels so the vertex shader can stay trivial.
-    let x = (point[0] * unify / extent - tile.offset_x) * tile.scale * extent;
-    let y = (point[1] * unify / extent - tile.offset_y) * tile.scale * extent;
+    let x = (point[0] * unify - tile.offset_x * extent) * tile.scale;
+    let y = (point[1] * unify - tile.offset_y * extent) * tile.scale;
     [x, y]
 }
 
@@ -387,11 +521,11 @@ fn fill_feature(
     feature: &model::Feature,
     tile: &DecodedTile<'_>,
     unify: f32,
+    extent: f32,
     color: Color,
     out: &mut Vec<f32>,
     stats: &mut TessellationStats,
 ) {
-    let extent = 4096.0_f32.max(1.0);
     // MVT packs several polygons into one feature. The first ring is always
     // exterior; a later ring with the same winding starts a new polygon, and
     // the opposite winding is a hole. Comparing signs rather than assuming a
@@ -460,14 +594,18 @@ fn line_feature(
     feature: &model::Feature,
     tile: &DecodedTile<'_>,
     unify: f32,
+    extent: f32,
     half_width: f32,
     color: Color,
     dash_pattern: Option<&[f32]>,
     out: &mut Vec<f32>,
 ) {
-    let extent = 4096.0_f32;
     for part in &feature.parts {
         if part.len() < 2 {
+            continue;
+        }
+        if dash_pattern.is_none() {
+            solid_line_part(part, tile, unify, extent, half_width, color, out);
             continue;
         }
         let points: Vec<[f32; 2]> = part
@@ -479,13 +617,9 @@ fn line_feature(
         // quads it is handed, so a dashed line is simply fewer of them. The
         // pattern's lengths are multiples of the line's width, and the width
         // is a half-width in extent units, hence the doubling.
-        let runs: Vec<Vec<[f32; 2]>> = match dash_pattern {
-            Some(pattern) if half_width > 0.0 => {
-                let scaled: Vec<f32> = pattern.iter().map(|v| v * half_width * 2.0).collect();
-                crate::dash::dashed(&points, &scaled)
-            }
-            _ => vec![points],
-        };
+        let pattern = dash_pattern.expect("solid lines returned above");
+        let scaled: Vec<f32> = pattern.iter().map(|v| v * half_width * 2.0).collect();
+        let runs = crate::dash::dashed(&points, &scaled);
 
         for points in runs {
             for window in points.windows(2) {
@@ -529,6 +663,66 @@ fn line_feature(
     }
 }
 
+/// Emits the common non-dashed path straight from decoded coordinates.
+/// Keeping a projected Vec per feature here cost an allocation for every road
+/// under every style layer. Segment vertices are still emitted before joins,
+/// in exactly the same order as the dashed path.
+fn solid_line_part(
+    part: &[[f32; 2]],
+    tile: &DecodedTile<'_>,
+    unify: f32,
+    extent: f32,
+    half_width: f32,
+    color: Color,
+    out: &mut Vec<f32>,
+) {
+    // Keep the projected end of the previous segment. A point belongs to two
+    // adjacent segments, so projecting both ends of every window did almost
+    // twice the coordinate work needed for this pass.
+    let mut a = project(part[0], tile, unify, extent);
+    for point in &part[1..] {
+        let b = project(*point, tile, unify, extent);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let length = (dx * dx + dy * dy).sqrt();
+        if length > f32::EPSILON {
+            let (nx, ny) = (-dy / length * half_width, dx / length * half_width);
+            let p0 = [a[0] + nx, a[1] + ny];
+            let p1 = [a[0] - nx, a[1] - ny];
+            let p2 = [b[0] + nx, b[1] + ny];
+            let p3 = [b[0] - nx, b[1] - ny];
+            for point in [p0, p1, p2, p1, p3, p2] {
+                push_vertex(out, point[0], point[1], color);
+            }
+        }
+        a = b;
+    }
+
+    // Joins must remain after all segments to preserve the packed vertex
+    // order. Use a three-point sliding window so this second pass also
+    // projects each point only once.
+    let mut prev = project(part[0], tile, unify, extent);
+    let mut here = project(part[1], tile, unify, extent);
+    for point in &part[2..] {
+        let next = project(*point, tile, unify, extent);
+        let d0 = normalise([here[0] - prev[0], here[1] - prev[1]]);
+        let d1 = normalise([next[0] - here[0], next[1] - here[1]]);
+        let n0 = [-d0[1] * half_width, d0[0] * half_width];
+        let n1 = [-d1[1] * half_width, d1[0] * half_width];
+        for point in [
+            here,
+            [here[0] + n0[0], here[1] + n0[1]],
+            [here[0] + n1[0], here[1] + n1[1]],
+            here,
+            [here[0] - n0[0], here[1] - n0[1]],
+            [here[0] - n1[0], here[1] - n1[1]],
+        ] {
+            push_vertex(out, point[0], point[1], color);
+        }
+        prev = here;
+        here = next;
+    }
+}
+
 #[inline]
 fn normalise(v: [f32; 2]) -> [f32; 2] {
     let length = (v[0] * v[0] + v[1] * v[1]).sqrt();
@@ -543,12 +737,12 @@ fn circle_feature(
     feature: &model::Feature,
     tile: &DecodedTile<'_>,
     unify: f32,
+    extent: f32,
     radius: f32,
     color: Color,
     out: &mut Vec<f32>,
 ) {
     const SEGMENTS: usize = 12;
-    let extent = 4096.0_f32;
     for part in &feature.parts {
         for point in part {
             let c = project(*point, tile, unify, extent);
@@ -604,6 +798,36 @@ mod tests {
     }
 
     #[test]
+    fn opaque_paint_matching_an_unchanged_background_needs_no_triangles() {
+        let tile = tile_with("poly", GeomType::Polygon, vec![vec![
+            [0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [0.0, 1000.0],
+        ]]);
+        let background = json!({"id":"bg", "type":"background", "paint":{"background-color":"#000000"}});
+        let fill = json!({"id":"fill", "type":"fill", "source":"src", "source-layer":"poly", "paint":{"fill-color":"#000000"}});
+        let different = json!({"id":"red", "type":"fill", "source":"src", "source-layer":"poly", "paint":{"fill-color":"#ff0000"}});
+        let later_background = json!({"id":"later-bg", "type":"background", "paint":{"background-color":"#0000ff"}});
+        let transparent_slot = json!({"id":"slot", "type":"background", "paint":{"background-color":"#ff0000", "background-opacity":0}});
+        for (layers, triangles) in [
+            (vec![background.clone(), fill.clone()], 0),
+            (vec![background.clone(), different, fill.clone()], 4),
+            (vec![fill.clone()], 2),
+            (vec![background.clone(), fill.clone(), later_background], 2),
+            (vec![background.clone(), fill.clone(), transparent_slot], 0),
+        ] {
+            let style = Style::from_json(&json!({"version":8,
+                "sources":{"src":{"type":"vector","tiles":["https://t/{z}/{x}/{y}.pbf"]}},
+                "layers":layers})).unwrap();
+            let result = tessellate(&style, 10.0, 512, 512.0, &decoded(&tile));
+            assert_eq!(result.triangle_count(), triangles, "{}", serde_json::to_string(&layers).unwrap());
+        }
+        let translucent = Style::from_json(&json!({"version":8,
+            "sources":{"src":{"type":"vector","tiles":["https://t/{z}/{x}/{y}.pbf"]}},
+            "layers":[background, {"id":"fill","type":"fill","source":"src","source-layer":"poly",
+                "paint":{"fill-color":"#000000","fill-opacity":0.5}}]})).unwrap();
+        assert_eq!(tessellate(&translucent, 10.0, 512, 512.0, &decoded(&tile)).triangle_count(), 2);
+    }
+
+    #[test]
     fn triangulates_a_square_into_two_triangles() {
         let style = style_with(json!({
             "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
@@ -619,7 +843,7 @@ mod tests {
                 [0.0, 1000.0],
             ]],
         );
-        let result = tessellate(&style, 10.0, 512, &decoded(&tile));
+        let result = tessellate(&style, 10.0, 512, 512.0, &decoded(&tile));
 
         assert_eq!(result.triangle_count(), 2);
         assert_eq!(result.batches.len(), 1);
@@ -649,7 +873,7 @@ mod tests {
                 ],
             ],
         );
-        let result = tessellate(&style, 10.0, 512, &decoded(&tile));
+        let result = tessellate(&style, 10.0, 512, 512.0, &decoded(&tile));
 
         // A square with a square hole triangulates to eight triangles, not the
         // two a solid square would give.
@@ -679,7 +903,7 @@ mod tests {
                 ],
             ],
         );
-        let result = tessellate(&style, 10.0, 512, &decoded(&tile));
+        let result = tessellate(&style, 10.0, 512, 512.0, &decoded(&tile));
         assert_eq!(result.triangle_count(), 4);
     }
 
@@ -694,7 +918,7 @@ mod tests {
             GeomType::LineString,
             vec![vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0]]],
         );
-        let result = tessellate(&style, 10.0, 512, &decoded(&tile));
+        let result = tessellate(&style, 10.0, 512, 512.0, &decoded(&tile));
         // Two segments (2 triangles each) plus one bevel join (2 triangles).
         assert_eq!(result.triangle_count(), 6);
     }
@@ -724,8 +948,8 @@ mod tests {
             vec![vec![[0.0, 0.0], [4096.0, 0.0]]],
         );
 
-        let whole = tessellate(&solid, 10.0, 512, &decoded(&tile));
-        let cut = tessellate(&dashed, 10.0, 512, &decoded(&tile));
+        let whole = tessellate(&solid, 10.0, 512, 512.0, &decoded(&tile));
+        let cut = tessellate(&dashed, 10.0, 512, 512.0, &decoded(&tile));
 
         assert_eq!(whole.triangle_count(), 2, "one segment, one quad");
         // 512 pixels of line, 4 on and 4 off: 64 dashes, two triangles each.
@@ -737,6 +961,237 @@ mod tests {
     /// every vertex outside it, and dropping that one leaves a hole where a
     /// lake should be.
     #[test]
+    /// A magnified tile's geometry lands inside the tile, whatever extent the
+    /// data came at.
+    ///
+    /// The projection used to divide by a hardcoded 4096 and multiply by it
+    /// again. The two cancelled while nothing was magnified, so the whole
+    /// tessellator looked correct; with a scale and an offset they did not,
+    /// and a source layer served at extent 2048 -- which Shortbread does --
+    /// pushed every vertex a tile-width off the edge. On device the ground
+    /// came back as nothing but its background colour while the labels, which
+    /// take the CPU path, drew perfectly.
+    #[test]
+    fn a_magnified_tile_lands_inside_itself_at_any_data_extent() {
+        let style = style_with(json!({
+            "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
+            "paint": { "fill-color": "#0000ff" }
+        }));
+        for data_extent in [2048u32, 4096] {
+            let span = data_extent as f32;
+            let tile = model::Tile {
+                layers: vec![model::Layer::from_tables(
+                    "poly".into(),
+                    data_extent,
+                    vec![],
+                    vec![],
+                    vec![model::Feature::new(
+                        Some(1),
+                        GeomType::Polygon,
+                        vec![vec![[0.0, 0.0], [span, 0.0], [span, span], [0.0, span]]],
+                        vec![],
+                    )],
+                )],
+            };
+            // The parent's south-east quarter, magnified to fill this tile.
+            let decoded = vec![DecodedTile {
+                source_id: "src",
+                tile: &tile,
+                scale: 2.0,
+                offset_x: 0.5,
+                offset_y: 0.5,
+            }];
+            let result = tessellate(&style, 10.0, 512, 512.0, &decoded);
+            assert!(
+                result.triangle_count() > 0,
+                "extent {data_extent}: nothing drawn"
+            );
+
+            // The polygon covers the whole parent, so magnified it must cover
+            // this tile: its corners land outside, and the tile is inside
+            // them. The bug put the whole thing to the left of the tile.
+            let extent = result.extent as f32;
+            let (mut min, mut max) = ([f32::MAX; 2], [f32::MIN; 2]);
+            for v in result.vertices.chunks(VERTEX_STRIDE) {
+                for axis in 0..2 {
+                    min[axis] = min[axis].min(v[axis]);
+                    max[axis] = max[axis].max(v[axis]);
+                }
+            }
+            for axis in 0..2 {
+                assert!(
+                    min[axis] <= 0.0 && max[axis] >= extent,
+                    "extent {data_extent}: axis {axis} spans {:?}..{:?}, not covering 0..{extent}",
+                    min[axis],
+                    max[axis]
+                );
+            }
+        }
+    }
+
+    /// Cutting children out of one whole-tile triangulation draws what
+    /// triangulating each child on its own draws: nothing a child shows is
+    /// missing, and nothing it does not show is there.
+    #[test]
+    fn children_cut_from_one_triangulation_match_their_own() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": { "src": { "type": "vector", "tiles": ["https://t/{z}/{x}/{y}.pbf"] } },
+            "layers": [
+                { "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
+                  "paint": { "fill-color": "#0000ff" } },
+                { "id": "l", "type": "line", "source": "src", "source-layer": "road",
+                  "paint": { "line-color": "#ff0000", "line-width": 3 } }
+            ]
+        }))
+        .unwrap();
+        let span = 4096.0f32;
+        // Polygons and roads spread over the parent, some crossing child
+        // boundaries, one far off in a corner.
+        let polys = vec![
+            vec![vec![
+                [100.0, 100.0],
+                [1500.0, 100.0],
+                [1500.0, 1500.0],
+                [100.0, 1500.0],
+            ]],
+            vec![vec![
+                [1800.0, 1800.0],
+                [3000.0, 1900.0],
+                [2600.0, 3100.0],
+                [1700.0, 2800.0],
+            ]],
+            vec![vec![
+                [3900.0, 3900.0],
+                [4090.0, 3900.0],
+                [4090.0, 4090.0],
+                [3900.0, 4090.0],
+            ]],
+        ];
+        let roads = vec![
+            vec![vec![[0.0, 2048.0], [span, 2100.0]]],
+            vec![vec![[300.0, 0.0], [700.0, 3000.0], [3500.0, 3500.0]]],
+        ];
+        let tile = model::Tile {
+            layers: vec![
+                model::Layer::from_tables(
+                    "poly".into(),
+                    4096,
+                    vec![],
+                    vec![],
+                    polys
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, rings)| {
+                            model::Feature::new(
+                                Some(i as u64 + 1),
+                                GeomType::Polygon,
+                                rings,
+                                vec![],
+                            )
+                        })
+                        .collect(),
+                ),
+                model::Layer::from_tables(
+                    "road".into(),
+                    4096,
+                    vec![],
+                    vec![],
+                    roads
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, parts)| {
+                            model::Feature::new(
+                                Some(i as u64 + 1),
+                                GeomType::LineString,
+                                parts,
+                                vec![],
+                            )
+                        })
+                        .collect(),
+                ),
+            ],
+        };
+        for scale in [2.0f32, 4.0] {
+            let whole = tessellate_with(
+                &style,
+                12.0,
+                512,
+                512.0,
+                &[DecodedTile {
+                    source_id: "src",
+                    tile: &tile,
+                    scale,
+                    offset_x: 0.0,
+                    offset_y: 0.0,
+                }],
+                false,
+            );
+            let across = scale as u32;
+            for cy in 0..across {
+                for cx in 0..across {
+                    let (ox, oy) = (cx as f32 / scale, cy as f32 / scale);
+                    let direct = tessellate(
+                        &style,
+                        12.0,
+                        512,
+                        512.0,
+                        &[DecodedTile {
+                            source_id: "src",
+                            tile: &tile,
+                            scale,
+                            offset_x: ox,
+                            offset_y: oy,
+                        }],
+                    );
+                    let extent = direct.extent as f32;
+                    assert_eq!(whole.extent, direct.extent);
+                    let cut = translated_clip(
+                        &whole,
+                        1.0,
+                        -ox * extent * scale,
+                        -oy * extent * scale,
+                        extent,
+                        extent / 64.0,
+                    );
+                    let tri = |t: &Tessellation| -> Vec<[f32; 6]> {
+                        t.vertices
+                            .chunks_exact(VERTEX_STRIDE * 3)
+                            .map(|v| [v[0], v[1], v[6], v[7], v[12], v[13]])
+                            .collect()
+                    };
+                    let (a, b) = (tri(&cut), tri(&direct));
+                    let same = |p: &[f32; 6], q: &[f32; 6]| {
+                        p.iter().zip(q).all(|(x, y)| (x - y).abs() < 0.05)
+                    };
+                    let touches = |p: &[f32; 6]| {
+                        let xs = [p[0], p[2], p[4]];
+                        let ys = [p[1], p[3], p[5]];
+                        let (lo, hi) = (0.0, extent);
+                        !(xs.iter().all(|&x| x < lo)
+                            || xs.iter().all(|&x| x > hi)
+                            || ys.iter().all(|&y| y < lo)
+                            || ys.iter().all(|&y| y > hi))
+                    };
+                    for p in &a {
+                        assert!(b.iter().any(|q| same(p, q)),
+                            "scale {scale} child {cx},{cy}: cut has a triangle its own triangulation lacks: {p:?}");
+                    }
+                    for q in b.iter().filter(|q| touches(q)) {
+                        assert!(a.iter().any(|p| same(p, q)),
+                            "scale {scale} child {cx},{cy}: a triangle on the tile is missing from the cut: {q:?}");
+                    }
+                    // Batches stay in style order.
+                    let ids: Vec<&str> = cut.batches.iter().map(|b| b.layer_id.as_str()).collect();
+                    assert!(
+                        ids == ["f", "l"] || ids == ["f"] || ids == ["l"] || ids.is_empty(),
+                        "{ids:?}"
+                    );
+                }
+            }
+        }
+    }
+
     fn an_overzoomed_tile_skips_whats_outside_but_keeps_what_surrounds_it() {
         let style = style_with(json!({
             "id": "f", "type": "fill", "source": "src", "source-layer": "poly",
@@ -786,7 +1241,7 @@ mod tests {
             offset_x: 0.5,
             offset_y: 0.5,
         }];
-        let result = tessellate(&style, 10.0, 512, &decoded);
+        let result = tessellate(&style, 10.0, 512, 512.0, &decoded);
         // Only the surrounding polygon: two triangles, not four.
         assert_eq!(result.triangle_count(), 2);
     }
@@ -833,7 +1288,7 @@ mod tests {
         let tile = model::Tile {
             layers: vec![layer],
         };
-        let result = tessellate(&style, 10.0, 512, &decoded(&tile));
+        let result = tessellate(&style, 10.0, 512, 512.0, &decoded(&tile));
 
         let stride = VERTEX_STRIDE;
         let reds: Vec<f32> = (0..result.vertex_count())
@@ -850,6 +1305,59 @@ mod tests {
     }
 
     #[test]
+    /// A style's background is the whole stack, not its last layer.
+    ///
+    /// versatiles' colorful paints a cream background and then four
+    /// `background-opacity: 0` layers that exist only as insertion slots.
+    /// Reporting the last of those made the host clear every tile to nothing,
+    /// and on a map with an opaque basemap underneath -- ArcGIS -- the result
+    /// was the basemap showing through wherever the data did not paint.
+    #[test]
+    fn transparent_background_slots_do_not_erase_the_background() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                { "id": "bg", "type": "background",
+                  "paint": { "background-color": "rgb(248,244,240)" } },
+                { "id": "slot-below-fills", "type": "background",
+                  "paint": { "background-opacity": 0 } },
+                { "id": "slot-below-labels", "type": "background",
+                  "paint": { "background-opacity": 0 } }
+            ]
+        }))
+        .unwrap();
+        let result = tessellate(&style, 10.0, 512, 512.0, &[]);
+        let background = result.background.expect("a background");
+        assert!((background.a - 1.0).abs() < 1e-6, "{background:?}");
+        assert!(
+            (background.r - 248.0 / 255.0).abs() < 1e-3,
+            "{background:?}"
+        );
+    }
+
+    /// Half-transparent backgrounds mix rather than replace.
+    #[test]
+    fn a_translucent_background_layer_mixes_with_the_one_below() {
+        let style = Style::from_json(&json!({
+            "version": 8,
+            "sources": {},
+            "layers": [
+                { "id": "bg", "type": "background",
+                  "paint": { "background-color": "#000000" } },
+                { "id": "tint", "type": "background",
+                  "paint": { "background-color": "#ffffff", "background-opacity": 0.5 } }
+            ]
+        }))
+        .unwrap();
+        let background = tessellate(&style, 10.0, 512, 512.0, &[])
+            .background
+            .expect("a background");
+        assert!((background.r - 0.5).abs() < 1e-3, "{background:?}");
+        assert!((background.a - 1.0).abs() < 1e-6, "{background:?}");
+    }
+
+    #[test]
     fn background_is_reported_separately_from_geometry() {
         let style = Style::from_json(&json!({
             "version": 8,
@@ -858,7 +1366,7 @@ mod tests {
                          "paint": { "background-color": "#123456" } }]
         }))
         .unwrap();
-        let result = tessellate(&style, 10.0, 512, &[]);
+        let result = tessellate(&style, 10.0, 512, 512.0, &[]);
         assert!(result.background.is_some());
         assert_eq!(result.triangle_count(), 0);
     }
@@ -880,7 +1388,7 @@ mod tests {
             ]],
         );
         assert_eq!(
-            tessellate(&style, 10.0, 512, &decoded(&tile)).triangle_count(),
+            tessellate(&style, 10.0, 512, 512.0, &decoded(&tile)).triangle_count(),
             0
         );
     }

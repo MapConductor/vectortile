@@ -105,6 +105,11 @@ impl Feature {
         self.props.len() / 2
     }
 
+    /// `[min_x, min_y, max_x, max_y]` in the tile's own units.
+    pub fn bounds(&self) -> [f32; 4] {
+        self.bbox
+    }
+
     /// The feature's (name index, value index) pairs, in storage order.
     pub fn prop_pairs(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         self.props.chunks_exact(2).map(|pair| (pair[0], pair[1]))
@@ -179,6 +184,50 @@ pub struct Tile {
 }
 
 impl Tile {
+    /// Heap capacity retained by a decoded tile, including geometry and tables.
+    pub(crate) fn memory_cost(&self) -> usize {
+        use std::mem::size_of;
+        size_of::<Self>()
+            + self.layers.capacity() * size_of::<Layer>()
+            + self
+                .layers
+                .iter()
+                .map(|layer| {
+                    layer.name.capacity()
+                        + layer.features.capacity() * size_of::<Feature>()
+                        + layer
+                            .features
+                            .iter()
+                            .map(|f| {
+                                f.props.capacity() * size_of::<u32>()
+                                    + f.parts.capacity() * size_of::<Vec<[f32; 2]>>()
+                                    + f.parts
+                                        .iter()
+                                        .map(|p| p.capacity() * size_of::<[f32; 2]>())
+                                        .sum::<usize>()
+                            })
+                            .sum::<usize>()
+                        + layer.property_names.capacity() * size_of::<String>()
+                        + layer
+                            .property_names
+                            .iter()
+                            .map(|s| s.capacity())
+                            .sum::<usize>()
+                        + layer.values.capacity() * size_of::<Value>()
+                        + layer
+                            .values
+                            .iter()
+                            .map(|v| match v {
+                                Value::String(s) => s.capacity(),
+                                _ => 0,
+                            })
+                            .sum::<usize>()
+                        + layer.name_index.capacity() * (size_of::<(String, u32)>() + 1)
+                        + layer.name_index.keys().map(|s| s.capacity()).sum::<usize>()
+                })
+                .sum::<usize>()
+    }
+
     pub fn layer(&self, name: &str) -> Option<&Layer> {
         self.layers.iter().find(|l| l.name == name)
     }

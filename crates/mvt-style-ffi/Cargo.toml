@@ -1,0 +1,13 @@
+[package]
+name = "mvt-style-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI bindings for mvt-style, for MapConductorVectorStyle"
+
+[lib]
+name = "mvt_style_ffi"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+mvt-style = { path = "../mvt-style" }

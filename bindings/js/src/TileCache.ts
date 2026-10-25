@@ -1,3 +1,27 @@
+import type { SourceTileCache } from './SourceTileCache';
+
+/** What one tile's worth of fetching had to do. For the debug log. */
+export interface SourceFetchStats {
+    memoryHits: number;
+    diskHits: number;
+    networkFetches: number;
+    sharedWaits: number;
+    cancelled: number;
+    queueWaitMs: number;
+}
+
+/** A fresh set of counters, all zero. */
+export function sourceFetchStats(): SourceFetchStats {
+    return {
+        memoryHits: 0,
+        diskHits: 0,
+        networkFetches: 0,
+        sharedWaits: 0,
+        cancelled: 0,
+        queueWaitMs: 0,
+    };
+}
+
 /**
  * LRU cache for fetched source tiles, with single-flight de-duplication.
  *
@@ -21,16 +45,29 @@ export class TileCache {
     constructor(private readonly maxBytes: number = 16 * 1024 * 1024) {}
 
     /**
+     * Where tiles are kept between sessions, when the caller asked for that.
+     *
+     * Behind the single-flight gate rather than in front of it: a cold memory
+     * cache has the whole ring of neighbours asking for the same file at once,
+     * and nine Cache Storage reads of one tile is as wasteful as nine
+     * downloads of it.
+     */
+    persistent: SourceTileCache | null = null;
+
+    /**
      * Returns the bytes for `url`, fetching via `fetcher` on a miss. A `null`
      * result (404, empty body) is cached too, so a known-missing tile is not
      * re-requested on every pan.
      */
     get(
         url: string,
-        fetcher: (url: string) => Promise<Uint8Array | null>,
+        fetcher: (url: string, signal?: AbortSignal) => Promise<Uint8Array | null>,
+        signal?: AbortSignal,
+        stats?: SourceFetchStats,
     ): Promise<Uint8Array | null> {
         if (this.entries.has(url)) {
             const cached = this.entries.get(url) ?? null;
+            if (stats) stats.memoryHits += 1;
             // Re-insert to mark as most recently used.
             this.entries.delete(url);
             this.entries.set(url, cached);
@@ -38,13 +75,31 @@ export class TileCache {
         }
 
         const pending = this.inFlight.get(url);
-        if (pending) return pending;
+        if (pending) {
+            if (stats) stats.sharedWaits += 1;
+            return pending;
+        }
 
-        const request = fetcher(url)
-            .catch(() => null)
-            .then((bytes) => {
+        const request = (async (): Promise<{ bytes: Uint8Array | null; stored: boolean }> => {
+            const stored = await this.persistent?.get(url);
+            if (stored) {
+                if (stats) stats.diskHits += 1;
+                return { bytes: stored, stored: true };
+            }
+            if (stats) stats.networkFetches += 1;
+            return { bytes: await fetcher(url, signal), stored: false };
+        })()
+            .catch((error: unknown) => {
+                if ((error as { name?: string } | null)?.name === 'AbortError' && stats) {
+                    stats.cancelled += 1;
+                }
+                return { bytes: null, stored: false };
+            })
+            .then(({ bytes, stored }) => {
                 this.inFlight.delete(url);
                 this.set(url, bytes);
+                // Nothing to write back for a tile that came from the store.
+                if (bytes && !stored) void this.persistent?.put(url, bytes);
                 return bytes;
             });
         this.inFlight.set(url, request);

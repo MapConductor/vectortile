@@ -52,7 +52,7 @@ fn main() {
             offset_y: 0.0,
         }];
         let started = Instant::now();
-        let result = tessellate(&style, z as f64, size, &decoded);
+        let result = tessellate(&style, z as f64, size, size as f32, &decoded);
         times.push(started.elapsed().as_secs_f64() * 1000.0);
         last = Some(result);
     }

@@ -33,6 +33,9 @@ function reply(message: WorkerResponse, transfer?: Transferable[]): void {
     ctx.postMessage(message, transfer ?? []);
 }
 
+/** Renders the host may still call off, by id. */
+const inFlight = new Map<number, AbortController>();
+
 ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
     const message = event.data;
 
@@ -41,19 +44,29 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
         ready = TileRenderCore.create({
             style: message.styleText,
             tileSize: message.tileSize,
+            displayTileSize: message.displayTileSize,
             cacheBytes: message.cacheBytes,
             headers: message.headers,
             wasmUrl: message.wasmUrl,
+            persistRenderedTiles: message.persistRenderedTiles,
+            persistSourceTiles: message.persistSourceTiles,
             onWarning: (text) => warnings.push(text),
         });
         ready.then(
             (created) => {
                 core = created;
+                // Pushed rather than answered: glyphs land long after the
+                // render that asked for them, so there is no request to reply
+                // to. The host makes the map refetch on it.
+                created.onGlyphsLoaded = () => {
+                    reply({ type: 'glyphs', generation: created.glyphGeneration });
+                };
                 reply({
                     type: 'init',
                     id: message.id,
                     unsupportedLayerTypes: created.unsupportedLayerTypes(),
                     diagnostics: created.diagnostics(),
+                    attributions: created.attributions(),
                     warnings,
                 });
             },
@@ -91,7 +104,17 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
         return;
     }
 
+    if (message.type === 'abort') {
+        // The render may not have started yet, or may be between its own
+        // checks. Either way the signal is what it reads.
+        inFlight.get(message.id)?.abort();
+        inFlight.delete(message.id);
+        return;
+    }
+
     if (message.type === 'dispose') {
+        for (const controller of inFlight.values()) controller.abort();
+        inFlight.clear();
         core?.dispose();
         core = null;
         ready = null;
@@ -110,16 +133,31 @@ ctx.addEventListener('message', (event: MessageEvent<WorkerRequest>) => {
             return;
         }
         pending
-            .then((renderer) =>
-                renderer.renderTile({ z: message.z, x: message.x, y: message.y }),
-            )
+            .then((renderer) => {
+                const abort = new AbortController();
+                inFlight.set(message.id, abort);
+                return renderer
+                    .renderTile(
+                        { z: message.z, x: message.x, y: message.y },
+                        message.content ?? 'full',
+                        abort.signal,
+                    )
+                    .finally(() => inFlight.delete(message.id));
+            })
             .then((result) => {
                 if (!result) {
                     reply({ type: 'render', id: message.id, result: null });
                     return;
                 }
-                // wasm hands back a freshly allocated array each call, so the
-                // buffer has no other owner and is safe to transfer.
+                // Transferred, not copied: a tile is hundreds of kilobytes and
+                // there is one per request.
+                //
+                // This holds the core to a contract — every array it returns
+                // from a render is the caller's to consume. Hand back something
+                // the core still holds (a cache entry, a shared constant) and
+                // the first transfer detaches it, after which every later
+                // request for it dies here with a DataCloneError rather than
+                // where the sharing was introduced.
                 reply({ type: 'render', id: message.id, result }, [result.buffer]);
             })
             .catch((error: unknown) => {

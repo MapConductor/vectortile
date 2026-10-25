@@ -164,6 +164,7 @@ fn decode_filtered(buf: &[u8], wanted: Option<&[String]>) -> Result<Tile> {
             _ => reader.skip(wire)?,
         }
     }
+    crate::seams::align_shortbread(&mut tile);
     Ok(tile)
 }
 

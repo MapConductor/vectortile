@@ -23,7 +23,7 @@ use crate::glyphs::{FontStack, Glyph, EDGE, GLYPH_SIZE, RANGE};
 /// A style names a stack per layer (`text-font`), and a stack is a list of
 /// faces tried in order — the first one holding a codepoint wins, which is how
 /// a Latin face and a CJK face cover a map between them.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct GlyphStore {
     faces: HashMap<String, HashMap<u32, Glyph>>,
     /// Rendered coverage masks, so a glyph that appears on every tile is
@@ -32,7 +32,7 @@ pub struct GlyphStore {
     /// Behind a mutex because tiles render in parallel over a shared,
     /// otherwise read-only store; the lock is held for a lookup or an insert,
     /// never while rendering.
-    masks: std::sync::Mutex<HashMap<MaskKey, std::sync::Arc<Mask>>>,
+    masks: std::sync::Mutex<crate::memory_cache::MemoryCache<MaskKey, std::sync::Arc<Mask>>>,
 }
 
 /// What makes two uses of a glyph the same drawing.
@@ -60,11 +60,20 @@ struct Mask {
     alpha: Vec<u8>,
 }
 
-/// Masks kept before the cache empties itself. A style uses a handful of
-/// sizes per zoom and a few hundred distinct characters per city; the cap
-/// only stops a pathological style from growing without bound, and clearing
-/// everything beats an LRU -- the working set refills in one tile.
+/// Both count and bytes are bounded; large glyph sizes cannot exceed the budget.
 const MASK_CACHE_CAP: usize = 8192;
+
+impl Default for GlyphStore {
+    fn default() -> Self {
+        Self {
+            faces: HashMap::new(),
+            masks: std::sync::Mutex::new(crate::memory_cache::MemoryCache::new(
+                MASK_CACHE_CAP,
+                8 << 20,
+            )),
+        }
+    }
+}
 
 impl GlyphStore {
     pub fn new() -> Self {
@@ -102,9 +111,26 @@ impl GlyphStore {
     }
 
     /// The first face in `fonts` that has this codepoint.
+    ///
+    /// A range that arrived without a name is tried last. The name inside a
+    /// `.pbf` is redundant -- a range is fetched from `{fontstack}/{range}.pbf`
+    /// and is by construction the stack that was asked for -- and servers in
+    /// the wild leave it out: every range versatiles serves carries its 256
+    /// glyphs and nothing else, so every one of them was filed under the empty
+    /// name and no lookup ever found it. The whole map drew its labels in
+    /// invisible ink, placed correctly and coloured with nothing.
+    ///
+    /// A named face always wins, so this changes nothing for a server that
+    /// fills the field in. What it cannot do is tell two nameless stacks
+    /// apart: a style asking for both a regular and a bold face gets whichever
+    /// of them arrived last wherever they hold the same character. Telling
+    /// them apart takes the name from the side that knows it -- the caller
+    /// that chose the URL -- which is an argument `add_glyphs` does not have
+    /// yet.
     pub fn glyph(&self, fonts: &[String], code: u32) -> Option<&Glyph> {
         fonts
             .iter()
+            .chain(std::iter::once(&String::new()))
             .find_map(|name| self.faces.get(name).and_then(|face| face.get(&code)))
     }
 
@@ -332,6 +358,40 @@ pub fn bounds(shaped: &Shaped, paint: &TextPaint, anchor: Anchor, at: (f32, f32)
     [left, top, left + w, top + h]
 }
 
+/// Covers the rasterized glyphs as well as the layout box. Font bearings and
+/// SDF borders can extend beyond the nominal line height; using only that
+/// height can discard a neighbour's visible half at a tile boundary.
+pub fn ink_bounds(
+    shaped: &Shaped,
+    store: &GlyphStore,
+    fonts: &[String],
+    paint: &TextPaint,
+    anchor: Anchor,
+    at: (f32, f32),
+) -> [f32; 4] {
+    let mut result = bounds(shaped, paint, anchor, at);
+    let origin = (result[0], result[1]);
+    let scale = paint.size / GLYPH_SIZE;
+    let buffer = crate::glyphs::BUFFER as f32;
+    for placed in &shaped.glyphs {
+        let Some(glyph) = store.glyph(fonts, placed.code) else {
+            continue;
+        };
+        if glyph.bitmap.is_empty() {
+            continue;
+        }
+        let x = pixel_origin(origin.0 + (placed.x + glyph.left as f32 - buffer) * scale) as f32;
+        let y = pixel_origin(origin.1 + (placed.y - glyph.top as f32 - buffer) * scale) as f32;
+        let width = ((glyph.width as f32 + 2.0 * buffer) * scale).ceil() + 1.0;
+        let height = ((glyph.height as f32 + 2.0 * buffer) * scale).ceil() + 1.0;
+        result[0] = result[0].min(x);
+        result[1] = result[1].min(y);
+        result[2] = result[2].max(x + width);
+        result[3] = result[3].max(y + height);
+    }
+    result
+}
+
 /// Draws a shaped label at `at`, in target pixels.
 ///
 /// The halo goes down first and the fill over it, so the fill's own edge is
@@ -531,6 +591,13 @@ fn build_mask(glyph: &Glyph, scale: f32, threshold: f32, gamma: f32) -> Mask {
     }
 }
 
+// Neighbouring tiles translate a glyph by an integer tile width. Ties must
+// round in the same direction on both sides of zero; f32::round moves
+// +0.5 to +1 but -0.5 to -1, shifting the two halves at the seam.
+fn pixel_origin(value: f32) -> i32 {
+    (value as f64 + 0.5).floor() as i32
+}
+
 /// As [`blit`], but through the store's mask cache when the glyph is drawn
 /// unrotated -- which is every glyph of every point label.
 ///
@@ -559,16 +626,16 @@ fn blit_cached(
         threshold: threshold.to_bits(),
         gamma: gamma.to_bits(),
     };
-    let cached = store.masks.lock().ok().and_then(|m| m.get(&key).cloned());
+    let cached = store.masks.lock().ok().and_then(|mut m| m.get(&key));
     let mask = match cached {
         Some(mask) => mask,
         None => {
             let mask = std::sync::Arc::new(build_mask(glyph, ink.scale, threshold, gamma));
             if let Ok(mut masks) = store.masks.lock() {
-                if masks.len() >= MASK_CACHE_CAP {
-                    masks.clear();
-                }
-                masks.insert(key, mask.clone());
+                let cost = mask.alpha.capacity()
+                    + std::mem::size_of::<Mask>()
+                    + std::mem::size_of::<MaskKey>();
+                masks.insert(key, mask.clone(), cost);
             }
             mask
         }
@@ -579,8 +646,8 @@ fn blit_cached(
     // glyph under half a pixel -- a quarter of a style pixel on the doubled
     // overlay.
     let buffer = crate::glyphs::BUFFER as f32;
-    let x0 = (ink.origin.0 + (placed.x + glyph.left as f32 - buffer) * ink.scale).round() as i32;
-    let y0 = (ink.origin.1 + (placed.y - glyph.top as f32 - buffer) * ink.scale).round() as i32;
+    let x0 = pixel_origin(ink.origin.0 + (placed.x + glyph.left as f32 - buffer) * ink.scale);
+    let y0 = pixel_origin(ink.origin.1 + (placed.y - glyph.top as f32 - buffer) * ink.scale);
     let pix_w = pixmap.width() as i32;
     let pix_h = pixmap.height() as i32;
     let base_alpha = ink.opacity * ink.color.a;
@@ -768,6 +835,18 @@ mod tests {
     use super::*;
     use crate::glyphs::BUFFER;
 
+    #[test]
+    fn glyph_pixel_origin_is_invariant_across_tile_boundaries() {
+        for tile_size in [256, 512, 1024] {
+            for position in [-0.5, 0.5, 15.5, 255.5, 511.5, 1023.5] {
+                assert_eq!(
+                    pixel_origin(position),
+                    pixel_origin(position - tile_size as f32) + tile_size,
+                );
+            }
+        }
+    }
+
     /// A glyph whose field is a real signed distance to a solid rectangle of
     /// ink, not a binary mask.
     ///
@@ -804,6 +883,47 @@ mod tests {
             top: height as i32,
             advance,
         }
+    }
+
+    /// A range that arrived without a name still draws.
+    ///
+    /// Not a hypothetical: versatiles serves every range as its 256 glyphs and
+    /// nothing else, and the whole map's labels went invisible because of it.
+    #[test]
+    fn a_nameless_range_still_answers_for_the_stack_that_asked() {
+        let mut store = GlyphStore::new();
+        let mut glyphs = HashMap::new();
+        glyphs.insert(65, solid(65, 4, 6, 5));
+        store.insert(FontStack {
+            name: String::new(),
+            range: String::new(),
+            glyphs,
+        });
+        let wanted = vec!["noto_sans_regular".to_string()];
+        assert!(store.glyph(&wanted, 65).is_some());
+        assert!(store.glyph(&wanted, 66).is_none(), "invented a glyph");
+    }
+
+    /// A named face is still preferred, so a well-formed server is unaffected.
+    #[test]
+    fn a_named_face_wins_over_a_nameless_one() {
+        let mut store = GlyphStore::new();
+        let mut nameless = HashMap::new();
+        nameless.insert(65, solid(65, 4, 6, 5));
+        store.insert(FontStack {
+            name: String::new(),
+            range: String::new(),
+            glyphs: nameless,
+        });
+        let mut named = HashMap::new();
+        named.insert(65, solid(65, 9, 6, 11));
+        store.insert(FontStack {
+            name: "F".into(),
+            range: "0-255".into(),
+            glyphs: named,
+        });
+        let glyph = store.glyph(&["F".to_string()], 65).expect("the named face");
+        assert_eq!(glyph.advance, 11);
     }
 
     fn store_with(glyphs: Vec<Glyph>) -> (GlyphStore, Vec<String>) {
@@ -895,6 +1015,110 @@ mod tests {
         assert!(centre[0] < top_left[0] && centre[1] < top_left[1]);
         assert_eq!(top_left[0], 100.0);
         assert_eq!(top_left[1], 100.0);
+    }
+
+    #[test]
+    fn adjacent_tiles_draw_the_same_glyph_pixels_as_one_image() {
+        let (store, fonts) = store_with(vec![solid(65, 12, 12, 14)]);
+        let shaped = shape("A", &fonts, &store, 100.0);
+        let paint = TextPaint {
+            size: 24.0,
+            color: Color::new(0.0, 0.0, 0.0, 1.0),
+            halo_color: Color::new(1.0, 1.0, 1.0, 1.0),
+            halo_width: 2.0,
+            halo_blur: 0.0,
+            opacity: 1.0,
+        };
+        let mut full = Pixmap::new(64, 64).unwrap();
+        draw(
+            &mut full,
+            &shaped,
+            &store,
+            &fonts,
+            &paint,
+            Anchor::TopLeft,
+            (28.5, 28.5),
+        );
+        // Both axes cross a seam. Fractional origins test tie rounding for
+        // negative neighbour coordinates as well as positive local ones.
+        for ty in 0..2 {
+            for tx in 0..2 {
+                let mut tile = Pixmap::new(32, 32).unwrap();
+                draw(
+                    &mut tile,
+                    &shaped,
+                    &store,
+                    &fonts,
+                    &paint,
+                    Anchor::TopLeft,
+                    (28.5 - tx as f32 * 32.0, 28.5 - ty as f32 * 32.0),
+                );
+                for y in 0..32 {
+                    for x in 0..32 {
+                        let local = ((y * 32 + x) * 4) as usize;
+                        let global = (((y + ty * 32) * 64 + x + tx * 32) * 4) as usize;
+                        assert_eq!(
+                            &tile.data()[local..local + 4],
+                            &full.data()[global..global + 4]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ink_bounds_keep_glyphs_whose_layout_box_is_above_the_tile() {
+        let mut glyph = solid(65, 12, 12, 14);
+        glyph.top = 0;
+        let (store, fonts) = store_with(vec![glyph]);
+        let shaped = shape("A", &fonts, &store, 100.0);
+        let paint = TextPaint {
+            size: 24.0,
+            color: Color::new(0.0, 0.0, 0.0, 1.0),
+            halo_color: Color::new(1.0, 1.0, 1.0, 1.0),
+            halo_width: 2.0,
+            halo_blur: 1.0,
+            opacity: 1.0,
+        };
+        let at = (32.0, -20.0);
+        assert!(bounds(&shaped, &paint, Anchor::Center, at)[3] < 0.0);
+        let ink = ink_bounds(&shaped, &store, &fonts, &paint, Anchor::Center, at);
+        assert!(crate::symbol::touches_tile(ink, 64));
+        let mut pixmap = Pixmap::new(64, 64).unwrap();
+        draw(
+            &mut pixmap,
+            &shaped,
+            &store,
+            &fonts,
+            &paint,
+            Anchor::Center,
+            at,
+        );
+        let mut painted = 0;
+        for y in 0..64 {
+            for x in 0..64 {
+                if pixmap.data()[((y * 64 + x) * 4 + 3) as usize] != 0 {
+                    painted += 1;
+                    assert!(x as f32 >= ink[0] && (x as f32) < ink[2]);
+                    assert!(y as f32 >= ink[1] && (y as f32) < ink[3]);
+                }
+            }
+        }
+        assert!(
+            painted > 0,
+            "the nominally invisible label actually reaches into the tile"
+        );
+        let translated = ink_bounds(
+            &shaped,
+            &store,
+            &fonts,
+            &paint,
+            Anchor::Center,
+            (at.0, at.1 + 64.0),
+        );
+        assert_eq!(ink[1] + 64.0, translated[1]);
+        assert_eq!(ink[3] + 64.0, translated[3]);
     }
 
     #[test]
