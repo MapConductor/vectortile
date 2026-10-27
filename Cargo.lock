@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "mvt-render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "earcutr",
  "mvt-style",
@@ -253,14 +253,14 @@ dependencies = [
 
 [[package]]
 name = "mvt-render-ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mvt-render",
 ]
 
 [[package]]
 name = "mvt-render-jni"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jni",
  "mvt-render",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "mvt-render-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "console_error_panic_hook",
  "mvt-render",
@@ -278,21 +278,21 @@ dependencies = [
 
 [[package]]
 name = "mvt-style"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "mvt-style-ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mvt-style",
 ]
 
 [[package]]
 name = "mvt-style-jni"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "jni",
  "mvt-style",
@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "mvt-style-wasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mvt-style",
  "wasm-bindgen",

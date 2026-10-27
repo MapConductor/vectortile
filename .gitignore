@@ -6,7 +6,15 @@ harness/test-results/
 harness/playwright-report/
 harness/ui-recolored.png
 
-# Native build products, produced by scripts/build-android.sh and build-ios.sh
+# Native build products, produced by scripts/build-*.sh. The SDKs take them from
+# a release (.github/workflows/release.yml), so a copy here would only be a stale
+# second answer to "which build is this".
+bindings/android/core/jniLibs/
+bindings/android/style/jniLibs/
+bindings/ios-core/lib/
+bindings/ios-core/TilePng.xcframework/
+bindings/ios-style/lib/
+bindings/ios-style/MvtStyle.xcframework/
 bindings/android/build/
 bindings/android/vectortile/build/
 bindings/android/.gradle/
