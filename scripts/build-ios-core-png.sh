@@ -9,13 +9,19 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-for target in aarch64-apple-ios-sim aarch64-apple-ios; do
+for target in aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-ios; do
     cargo build -p tile-png-ffi --target "$target" --release
 done
 
 dest="$root/bindings/ios-core/lib"
 mkdir -p "$dest/sim" "$dest/device"
-cp "$root/target/aarch64-apple-ios-sim/release/libtile_png_ffi.a" "$dest/sim/"
+# One simulator slice for both Apple silicon and Intel Macs. Without x86_64 an
+# Intel simulator build fails to link, and so does CocoaPods trunk validation,
+# which builds the simulator for both architectures.
+lipo -create \
+    "$root/target/aarch64-apple-ios-sim/release/libtile_png_ffi.a" \
+    "$root/target/x86_64-apple-ios/release/libtile_png_ffi.a" \
+    -output "$dest/sim/libtile_png_ffi.a"
 cp "$root/target/aarch64-apple-ios/release/libtile_png_ffi.a" "$dest/device/"
 
 # Drop debug and local symbols. A static library carries every object Rust
